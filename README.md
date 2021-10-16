@@ -52,8 +52,11 @@ Our code uses WandB as logger. Before running our code, you should log in to Wan
 python launcher.py --env ENV --algo ALGO --name NAME --para PARA
 ```
 `ENV` specifies which environment to run in, including `eight`, `ring`, `catchup`， `slowdown`.
+
 `ALGO` specifies the algorithm to use, including `IA2C`, `IC3Net`, `CPPO`, `DPPO`, `DMPO`.
+
 `NAME` is the additional name for the logger, which is set to `''` as default.
+
 `PARA` is the hyperparameter json string. The default parameters are loaded from config folder, and this would override specific parameters.
 
 
