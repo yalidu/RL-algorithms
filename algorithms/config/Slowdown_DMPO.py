@@ -20,8 +20,8 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.test_length = 600
     alg_args.max_episode_len = 600
     alg_args.model_based = True
-    alg_args.load_pretrained_model = True
-    alg_args.pretrained_model = 'checkpoints/standard_CACC_slowdown_MB_DPPOAgent_44410/30000_5221.156627853712.pt'
+    alg_args.load_pretrained_model = False
+    alg_args.pretrained_model = None
     alg_args.n_traj = 1024
     alg_args.model_traj_length = 25
     alg_args.model_error_thres = 2e-4

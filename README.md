@@ -33,6 +33,10 @@ mkdir build/cmake-build && cd build/cmake-build
 cmake ../..
 make -j$(nproc)
 ```
+After building, you need to manually ad the bin folder into your path:
+```
+export PATH=$PATH:$SUMO_HOME/bin
+```
 
 2. Setting up the environment.
 

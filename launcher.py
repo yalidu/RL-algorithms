@@ -9,7 +9,7 @@ import json
 from algorithms.utils import Config, LogClient, LogServer, mem_report
 from algorithms.envs.FigureEight import makeFigureEight2, makeFigureEightTest
 from algorithms.envs.Ring import makeRingAttenuation
-from algorithms.envs.CACC import CACC_catchup, CACC_slowdown
+from algorithms.envs.CACC import CACC_catchup, CACC_slowdown, CACC_catchup_test, CACC_slowdown_test
 
 from algorithms.mbdppo.MB_DPPO import OnPolicyRunner
 
@@ -76,9 +76,9 @@ def initEnv(input_args):
     elif input_args.env == 'ring':
         env_fn_train, env_fn_test = makeRingAttenuation, makeRingAttenuation
     elif input_args.env == 'catchup':
-        env_fn_train, env_fn_test = CACC_catchup, CACC_catchup
+        env_fn_train, env_fn_test = CACC_catchup, CACC_catchup_test
     elif input_args.env == 'slowdown':
-        env_fn_train, env_fn_test = CACC_slowdown, CACC_slowdown
+        env_fn_train, env_fn_test = CACC_slowdown, CACC_slowdown_test
     else:
         env_fn_train, env_fn_test = None
     return env_fn_train, env_fn_test

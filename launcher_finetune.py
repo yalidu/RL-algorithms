@@ -3,8 +3,8 @@ import os
 mode = 'finetune'  # 'final' or 'finetune'
 
 env_ls = [ 'slowdown' ] #'catchup', 'eight'
-algo_ls = ['IC3Net']
-name = '[finetune-4]'
+algo_ls = ['DMPO']
+name = '[finetune-0]'
 
 if mode == 'final':
     seed_number = 5
@@ -33,7 +33,8 @@ elif mode == 'finetune':
                'catchup': ['{}',
                            '\'{\\\"agent_args.lr\\\":5e-4,\\\"agent_args.lr_v\\\":5e-4}\'',
                            '\'{\\\"agent_args.lr\\\":5e-3,\\\"agent_args.lr_v\\\":5e-3}\'',
-                           '\'{\\\"agent_args.lr\\\":5e-5,\\\"agent_args.lr_v\\\":5e-4}\''],
+                           '\'{\\\"agent_args.lr\\\":5e-5,\\\"agent_args.lr_v\\\":5e-4}\''
+                           ],
                'slowdown': ['\'{\\\"agent_args.lr_v\\\":1e-2,\\\"agent_args.lr_p\\\":1e-2}\'',
                          '\'{\\\"agent_args.lr_v\\\":1e-2,\\\"agent_args.lr_p\\\":1e-3}\'',
                          '\'{\\\"agent_args.lr_v\\\":1e-3,\\\"agent_args.lr_p\\\":1e-3}\''],
@@ -52,7 +53,7 @@ elif mode == 'finetune':
                     os.system(f'tmux new-window -d -n actor_para{j}_{i}')
 
                     # prepare the python running command
-                    py_command = f"tmux  send-keys -t actor_para{j}_{i} \"python launcher_baseline.py --env {env} --algo {algo} --name {name+str(j)} --para {tune_ls[env][j]}\" ENTER"
+                    py_command = f"tmux  send-keys -t actor_para{j}_{i} \"python launcher.py --env {env} --algo {algo} --name {name+str(j)} --para {tune_ls[env][j]}\" ENTER"
                     os.system(py_command)
 # os.system(f"tmux attach -t {algo}_{env}{name}")
 

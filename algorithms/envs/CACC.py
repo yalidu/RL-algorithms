@@ -9,7 +9,7 @@ from ..utils import listStack
 
 
 class CACCWrapper(gym.Wrapper):
-    def __init__(self, config_path, bias=0, std=1):
+    def __init__(self, config_path, bias=0, std=1, test=False):
         # k-hop
         config_path = os.path.join(os.path.dirname(__file__), config_path)
         config = configparser.ConfigParser()
@@ -21,6 +21,7 @@ class CACCWrapper(gym.Wrapper):
         self.action_space = Discrete(4)
         self.bias=bias
         self.std=std
+        self.test = test
         env.neighbor_mask += np.eye(env.n_agent, dtype=env.neighbor_mask.dtype)
     
     def ifCollide(self):
@@ -42,10 +43,30 @@ class CACCWrapper(gym.Wrapper):
         return state
     
     def get_reward_(self):
+        # give large penalty for collision
+        h_rewards = -(self.hs_cur - self.h_star) ** 2
+        v_rewards = -self.a * (self.vs_cur - self.v_star) ** 2
+        u_rewards = -self.b * (self.us_cur) ** 2
+        if self.train_mode:
+            c_rewards = -COLLISION_WT * (np.minimum(self.hs_cur - COLLISION_HEADWAY, 0)) ** 2
+        else:
+            c_rewards = 0
+        rewards = h_rewards + v_rewards + u_rewards 
+       # rewards = v_rewards
+        if np.min(self.hs_cur) < self.h_min:
+            self.collision = True
+            collided = hs_cur < self.h_min
+            for i in range(self.hs_cur.shape[0]):
+                if collided[i]:
+                    rewards[i] -= self.G
+        return rewards
+    
+    def _comparable_reward(self):
         return self.env._get_reward()
     
     def state2Reward(self, state):
         # accepts a (gpu) tensor
+        # Deprecated
         reward, done =  self.env.state2Reward(state)
         return (reward+self.bias)/self.std, done
     
@@ -65,6 +86,8 @@ class CACCWrapper(gym.Wrapper):
         if type(action[0]) == list:
             action = action[0]
         state, reward, done, info = self.env.step(action)
+        if self.test:
+            reward = self._comparable_reward()
         state = np.array(state, dtype=np.float32)
         reward = np.array(reward, dtype=np.float32)
         done = np.array([done]*8, dtype=np.float32)
@@ -84,3 +107,9 @@ def CACC_catchup():
 
 def CACC_slowdown():
     return CACCWrapper('NCS/config/config_ma2c_nc_slowdown.ini', bias=300, std=2000)
+
+def CACC_catchup_test():
+    return CACCWrapper('NCS/config/config_ma2c_nc_catchup.ini', bias=200, std=2000, test=True)
+
+def CACC_slowdown_test():
+    return CACCWrapper('NCS/config/config_ma2c_nc_slowdown.ini', bias=300, std=2000, test=True)
