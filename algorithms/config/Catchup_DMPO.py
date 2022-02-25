@@ -11,7 +11,7 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.n_iter = 25000
     alg_args.n_inner_iter = 10
     alg_args.n_warmup = 50
-    alg_args.n_model_update = int(2e3)
+    alg_args.n_model_update = int(5e2)
     alg_args.n_model_update_warmup = int(2e4)
     alg_args.n_test = 5
     alg_args.model_validate_interval = 10
@@ -20,13 +20,15 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.test_length = 600
     alg_args.max_episode_len = 600
     alg_args.model_based = True
-    alg_args.load_pretrained_model = True
+    alg_args.load_pretrained_model = False
+    
     alg_args.pretrained_model = 'checkpoints/standard_CACC_catchup_MB_DPPOAgent_30333/30000_6413.795132637025.pt'
+
     alg_args.n_traj = 2048
     alg_args.model_traj_length = 25
-    alg_args.model_error_thres = 5e-4
+    alg_args.model_error_thres = 5e-5
     alg_args.model_prob = 0.5
-    alg_args.model_batch_size = 256
+    alg_args.model_batch_size = 512
     alg_args.model_buffer_size = 15
     alg_args.model_update_length = 4
     alg_args.model_length_schedule = None

@@ -23,10 +23,11 @@ import sumolib
 
 
 from algorithms.envs.flow.core.util import ensure_dir
-from algorithms.envs.flow.core.kernel import Kernel
+from algorithms.envs.flow.core.kernel.Kernel import Kernel
 from algorithms.envs.flow.utils.exceptions import FatalFlowError
 
-
+global a
+a=0
 class Env(gym.Env, metaclass=ABCMeta):
     """Base environment class.
 
@@ -495,8 +496,12 @@ class Env(gym.Env, metaclass=ABCMeta):
         for veh_id in self.initial_ids:
             type_id, edge, lane_index, pos, speed = \
                 self.initial_state[veh_id]
+                
+            print(veh_id)
 
             try:
+                # self.k.vehicle.remove(veh_id)
+                # print('aaaaaaaaaaaaaaaaaaaaaaaa')
                 self.k.vehicle.add(
                     veh_id=veh_id,
                     type_id=type_id,
@@ -504,7 +509,12 @@ class Env(gym.Env, metaclass=ABCMeta):
                     lane=lane_index,
                     pos=pos,
                     speed=speed)
+
+
+
             except (FatalTraCIError, TraCIException):
+            # except:
+                # print('bbbbbbbbbbbbbbbbbbbbbbb')
                 # if a vehicle was not removed in the first attempt, remove it
                 # now and then reintroduce it
                 self.k.vehicle.remove(veh_id)
@@ -517,6 +527,9 @@ class Env(gym.Env, metaclass=ABCMeta):
                     lane=lane_index,
                     pos=pos,
                     speed=speed)
+
+
+
 
         # advance the simulation in the simulator by one step
         self.k.simulation.simulation_step()

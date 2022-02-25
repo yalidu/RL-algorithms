@@ -442,6 +442,7 @@ class GraphConvolutionalModel(nn.Module):
             return r1, s1, done
     
     def train(self, s, a, r, s1, d, length = 1):
+       
         """
         Input shape: [batch_size, T, n_agent, dim]
         """

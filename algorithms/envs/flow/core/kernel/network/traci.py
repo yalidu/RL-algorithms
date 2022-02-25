@@ -525,6 +525,8 @@ class TraCIKernelNetwork(BaseKernelNetwork):
                 print('Retrying in {} seconds...'.format(WAIT_ON_ERROR))
                 time.sleep(WAIT_ON_ERROR)
         raise error
+        
+
 
     def generate_net_from_osm(self, net_params):
         """Generate .net.xml files from OpenStreetMap files.

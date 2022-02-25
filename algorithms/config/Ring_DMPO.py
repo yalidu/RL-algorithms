@@ -11,7 +11,7 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.n_iter = 25000
     alg_args.n_inner_iter = 10
     alg_args.n_warmup = 50
-    alg_args.n_model_update = int(2e3)
+    alg_args.n_model_update = int(500)
     alg_args.n_model_update_warmup = int(2e4)
     alg_args.n_test = 5
     alg_args.model_validate_interval = 10
@@ -20,7 +20,7 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.test_length = 3000
     alg_args.max_episode_len = 3000
     alg_args.model_based = True
-    alg_args.load_pretrained_model = True
+    alg_args.load_pretrained_model = False
     alg_args.pretrained_model = 'checkpoints/standard_makeRingAttenuation_MB_DPPOAgent_62746/164849_-5997.291270560293.pt'
     alg_args.n_traj = 2048
     alg_args.model_traj_length = 25

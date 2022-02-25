@@ -1,5 +1,11 @@
-"""Empty init file to ensure documentation for kernel is created."""
+"""Empty init file to handle deprecations."""
 
-from algorithms.envs.flow.core.kernel.kernel import Kernel
+import warnings
+from algorithms.envs.flow.core.kernel.network import *  # noqa: F401,F403
 
-__all__ = ["Kernel"]
+warnings.simplefilter('always', PendingDeprecationWarning)
+warnings.warn(
+    "flow.core.kernel.scenario will be deprecated in a future release. Please "
+    "use flow.core.kernel.network instead.",
+    PendingDeprecationWarning
+)

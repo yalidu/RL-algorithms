@@ -1,5 +1,12 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jan 24 01:29:49 2022
+
+@author: 86153
+"""
+
 import time
-import os
+import matplotlib.pyplot as plt
 from numpy.core.numeric import indices
 from torch.distributions.normal import Normal
 from algorithms.utils import collect, mem_report
@@ -15,17 +22,20 @@ from torch.distributions.categorical import Categorical
 from torch.optim import Adam
 import numpy as np
 import pickle
+import copy
 from copy import deepcopy as dp
-from algorithms.models import CategoricalActor, EnsembledModel, SquashedGaussianActor, ParameterizedModel_MBPPO
 import random
-import multiprocessing as mp
-# import torch.multiprocessing as mp
-from torch import distributed as dist
-import argparse
+from algorithms.models import CategoricalActor, EnsembledModel, SquashedGaussianActor, ParameterizedModel_MBPPO
+import imageio,os
+# from algorithms.envs.UAV_Stru import UAV_structure
+from algorithms.envs.UAV_Stru_101 import UAV_structure
 
-
+# test_actors_model = 'D:/A_RL/MB-MARL/checkpoints/standard _UAV_Env_DPPOAgent_4864/Models/200best_actor.pt'
+# test_actors_model = 'D:/A_RL/MB-MARL/checkpoints/standard _UAV_2_Env_DPPOAgent_45004/Models/22800best_actor.pt'
+test_actors_model = 'D:/A_RL/MB-MARL/checkpoints/standard _UAV_2_Env_DPPOAgent_58805/Models/800best_actor.pt'
+test_actors_model = 'D:/A_RL/MB-MARL/checkpoints/standard _UAV_101_Env_DPPOAgent_7674/Models/1000best_actor.pt'
 class MultiCollect:
-    def __init__(self, adjacency, device='cuda'):
+    def __init__(self, adjacency, device="cpu"):
         """
         Method: 'gather', 'reduce_mean', 'reduce_sum'.
         Adjacency: torch Tensor.
@@ -36,7 +46,6 @@ class MultiCollect:
         adjacency = adjacency > 0 # Adjacency Matrix, with size n_agent*n_agent. 
         adjacency = adjacency | torch.eye(n, device=device).bool() # Should contain self-loop, because an agent should utilize its own info.
         adjacency = adjacency.to(device)
-        # print('a=',adjacency)
         self.degree = adjacency.sum(dim=1) # Number of information available to the agent.
         self.indices = []
         index_full = torch.arange(n, device=device)
@@ -97,23 +106,17 @@ class Trajectory:
         self.names = ["s", "a", "r", "s1", "d", "logp"]
         self.dict = {name: kwargs[name] for name in self.names}
         self.length = self.dict["s"].size()[0]
-          
+    
     def getFraction(self, length, start=None):
-        # print('l1=',length)
-        # print('l2=',self.length)
         if self.length < length:
             length = self.length
         start_max = self.length - length
         if start is None:
             start = torch.randint(low=0, high=start_max+1, size=(1,)).item()
-            
-        start = min(max(start, 0), start_max) 
-        
-        # if start > start_max:
-        #     start = start_max
-        # if start < 0:
-        #     start = 0
-      
+        if start > start_max:
+            start = start_max
+        if start < 0:
+            start = 0
         new_dict = {name: self.dict[name][start:start+length] for name in self.names}
         return Trajectory(**new_dict)
     
@@ -126,7 +129,7 @@ class Trajectory:
         return ["s", "a", "r", "s1", "d", "logp"]
 
 class TrajectoryBuffer:
-    def __init__(self, device="cuda"):
+    def __init__(self, device="cpu"):
         self.device = device
         self.s, self.a, self.r, self.s1, self.d, self.logp = [], [], [], [], [], []
     
@@ -200,15 +203,19 @@ class ModelBuffer:
         return [self.trajectories[i] for i in traj_idxs]
 
 class OnPolicyRunner:
-    def __init__(self, logger, run_args, alg_args, agent, env_learn, env_test, env_args,**kwargs):
+    def __init__(self, logger, run_args, alg_args, agent, env_learn, env_test, **kwargs):
         self.logger = logger
         self.name = run_args.name
         if not run_args.init_checkpoint is None:
             agent.load(run_args.init_checkpoint)
             logger.log(interaction=run_args.start_step)  
+            
+        # agent.load_state_dict(torch.load('C:/Users/86153/Desktop/MB-MARL/checkpoints/standard_UAV_Env_DPPOAgent_9676/1618304_-130.85930694345433.pt'))
+        # agent.load_state_dict(torch.load('./123.pt'))  
+        # load_state_dict(torch.load('./Models/49999best_actor.pt'))
+        
+        
         self.start_step = run_args.start_step 
-        self.env_name = env_args.env
-
         # algorithm arguments
         self.n_iter = alg_args.n_iter
         self.n_inner_iter = alg_args.n_inner_iter
@@ -218,7 +225,10 @@ class OnPolicyRunner:
         self.n_test = alg_args.n_test
         self.test_interval = alg_args.test_interval
         self.rollout_length = alg_args.rollout_length
+        
         self.test_length = alg_args.test_length
+        # self.test_length = 100
+        
         self.max_episode_len = alg_args.max_episode_len
         self.clip_scheme = None if (not hasattr(alg_args, "clip_scheme")) else alg_args.clip_scheme
         
@@ -229,7 +239,10 @@ class OnPolicyRunner:
         # environment initialization
         self.env_learn = env_learn
         self.env_test = env_test
-
+        
+        self.n_agent = env_test.n_agent
+        # self.n_agent = 28
+        
         # buffer initialization
         self.discrete = agent.discrete
         action_dtype = torch.long if self.discrete else torch.float
@@ -245,15 +258,11 @@ class OnPolicyRunner:
             self.model_length_schedule = alg_args.model_length_schedule
             self.model_prob = alg_args.model_prob
         self.s, self.episode_len, self.episode_reward = self.env_learn.reset(), 0, 0
+
         # load pretrained model
         self.load_pretrained_model = alg_args.load_pretrained_model
         if self.model_based and self.load_pretrained_model:
             self.agent.load_model(alg_args.pretrained_model)
-            
-        # self.nn=[]
-        # for i in trange(self.n_model_update):
-        #     self.nn.append(i)
-        # self.nn = tuple(self.nn)
 
     def run(self):
         if self.model_based and not self.load_pretrained_model:
@@ -261,55 +270,14 @@ class OnPolicyRunner:
                 trajs = self.rollout_env()
                 self.model_buffer.storeTrajs(trajs)
             self.updateModel(self.n_model_update_warmup) # Sample trajectories, then shorten them.
-
         for iter in trange(self.n_iter):
-            
-            
-            # if iter % self.test_interval == 0:
-            if iter % 100 == 0:
-                mean_return = self.test(iter)
+            if iter % self.test_interval == 0:
+                mean_return = self.test()
                 self.agent.save(info = mean_return)
-                
-            # if iter % 200 == 0:
-            #     self.agent.save_nets(f'./checkpoints/{self.name}',iter)
-
-
             trajs = self.rollout_env()  #  TO cheak: rollout n_step, maybe multi trajs
-           
-            
-           
-            
-#---------------------------------------------------------------------------------------              
-            # t1=time.time()            
-            # if self.model_based:
-            #     self.model_buffer.storeTrajs(trajs)
-            #     self.updateModel()
-            # t2=time.time()
-            # print('t=',t2-t1)
-
-#---------------------------------------------------------------------------------------   
-            t1=time.time()              
             if self.model_based:
                 self.model_buffer.storeTrajs(trajs)
-                if iter % 10 == 0:
-                    self.updateModel()
-            t2=time.time()
-            print('t=',t2-t1)
-#---------------------------------------------------------------------------------------                       
-            # t1=time.time()
-            # if self.model_based:
-            #     self.model_buffer.storeTrajs(trajs)                  
-            #     # p=multiprocessing.Pool(100)
-            #     p=mp.Pool(100)
-            #     # b = p.map_async(self.updateModel(), self.nn)
-            #     p.apply_async(self.updateModel(), args=self.nn)
-
-            #     p.close()
-            #     p.join()
-            # t2=time.time()
-            # print('t=',t2-t1)
-#---------------------------------------------------------------------------------------                   
-                
+                self.updateModel()
             agentInfo = []
             real_trajs = trajs
             for inner in trange(self.n_inner_iter):
@@ -331,7 +299,7 @@ class OnPolicyRunner:
                     break
             self.logger.log(inner_iter = inner + 1, iter=iter)
 
-    def test(self,nnn):
+    def test(self):
         """
         The environment should return sth like [n_agent, dim] or [batch_size, n_agent, dim] in either numpy or torch.
         """
@@ -341,60 +309,615 @@ class OnPolicyRunner:
         scaled = []
         lengths = []
         episodes = []
+
         for i in trange(self.n_test):
+           
+# test uav---------------------------------------------------------------------------------------------------------
+
+            X = [[]]*self.n_agent 
+            Y = [[]]*self.n_agent 
+            Z = [[]]*self.n_agent 
+            Pusin = [[]]*self.n_agent 
+            Gamma = [[]]*self.n_agent 
+            V = [[]]*self.n_agent 
+            Mju = [[]]*self.n_agent 
+            Step = []
+
+
+            X_ = []
+            Y_ = []
+            Z_ = []
+            Pusin_ = []
+            Gamma_ = []
+            V_ = []
+            Mju_ = []
+
+            
+# --------------------------------------------------------------------------------------------------------------
+
+   
             episode = []
-            env = self.env_test    
-            
-            if self.env_name == 'eight':
-                if i==0 and nnn == 0:
-                    env.reset()    #for figure eight env
-            else:                           
-                env.reset()     # for another env
-                
-            # env.reset()
-            
+            env = self.env_test
+            env.reset()
             d, ep_ret, ep_len = np.array([False]), 0, 0
-            while not(d.any() or (ep_len == length)):
+            # while not(d.any() or (ep_len == length)):
+            while not (ep_len == length):
+                Step.append(ep_len)
                 s = env.get_state_() # dim = 2 or 3 (vectorized)
-                # s.insert(0, s[0])
-                # s=dp(s)
-                # print('ssss=',s)
                 s = torch.as_tensor(s, dtype=torch.float, device=self.device)
                 a = self.agent.act(s).sample() # a is a tensor
-                # print('a=,',a)
-    #-----------------------------------------------                
+                # a = self.agent.act(s)
                 # a = a.tanh()
-    #-----------------------------------------------                
+
                 a = a.detach().cpu().numpy() # might not be squeezed at the last dimension. env should deal with this though.
-                # print(s)
                 s1, r, d, _ = env.step(a)
                 episode += [(s.tolist(), a.tolist(), r.tolist())]
                 d = np.array(d)
                 ep_ret += r.sum()
                 ep_len += 1
-                self.logger.log(interaction=None)
-            if hasattr(env, 'rescaleReward'):
-                scaled += [ep_ret]
-                ep_ret = env.rescaleReward(ep_ret, ep_len)
-            returns += [ep_ret]
-            lengths += [ep_len]
-            episodes += [episode]
-        returns = np.stack(returns, axis=0)
-        lengths = np.stack(lengths, axis=0)
-        self.logger.log(test_episode_reward=returns, test_episode_len=lengths, test_round=None)
-        print(returns)
-        print(f"{self.n_test} episodes average accumulated reward: {returns.mean()}")
-        if hasattr(env, 'rescaleReward'):
-            print(f"scaled reward {np.mean(scaled)}")
-        with open(f"checkpoints/{self.name}/test.pickle", "wb") as f:
-            pickle.dump(episodes, f)
-        with open(f"checkpoints/{self.name}/test.txt", "w") as f:
-            for episode in episodes:
-                for step in episode:
-                    f.write(f"{step[0]}, {step[1]}, {step[2]}\n")
-                f.write("\n")
-        self.logger.log(test_time=time.time()-time_t)
-        return returns.mean()
+                self.logger.log(interaction=None)   
+
+                s1 = dp(env.get_state_real(dp(s1)))
+                a = dp(env.get_action_real(dp(a))) 
+                
+                for k in range(self.n_agent):
+                    s1 = dp(s1)
+                    a = dp(a)
+                    k = dp(k)
+                    X[k].append(s1[k][0])
+                    Y[k].append(s1[k][1])
+                    Z[k].append(s1[k][2])
+                    Pusin[k].append(s1[k][3])
+                    Gamma[k].append(s1[k][4])
+                    V[k].append(s1[k][5]) 
+                    Mju[k].append(s1[k][6])  
+
+                
+                # episode += [(s.tolist(), a.tolist(), r.tolist())]
+                # d = np.array(d)
+                # ep_ret += r.sum()
+                # ep_len += 1
+                # self.logger.log(interaction=None)   
+            
+# --------------------------------------------------------------------------------------------------------------   
+
+# test uav : plot_trajectory----------------------------------------------------------------------------------------------------   
+
+            # print('sss=',len(p_x))
+            # print('sss=',len(X[0]))
+            # print('a=',len(X))
+            # print('bbb=',X)
+            color = ['red','royalblue','deeppink','lightpink','gold','green','peru','fuchsia','teal','darkred','orange','orange']
+            p_x=dp(X[0])
+            p_y=dp(Y[0])
+            p_z=dp(Z[0])
+            p_pusin=dp(Pusin[0])
+            p_gamma=dp(Gamma[0])
+            p_v=dp(V[0])
+            p_mju=dp(Mju[0])
+            # print('sss=',len(p_x))           
+          
+            for j in range(self.n_agent):
+                temp_x=[]
+                temp_y=[]
+                temp_z=[]
+                temp_pusin=[]
+                temp_gamma=[]
+                temp_v=[]
+                temp_mju=[]
+                
+                q=dp(j)
+                for r in range(self.test_length):
+                    r=dp(r)
+                    temp_x.append(dp(p_x[q+r*self.n_agent]))
+                    temp_y.append(dp(p_y[q+r*self.n_agent]))
+                    temp_z.append(dp(p_z[q+r*self.n_agent]))
+                    temp_pusin.append(dp(p_pusin[q+r*self.n_agent]))
+                    temp_gamma.append(dp(p_gamma[q+r*self.n_agent]))
+                    temp_v.append(dp(p_v[q+r*self.n_agent]))
+                    temp_mju.append((p_mju[q+r*self.n_agent]))
+                X_.append(dp(temp_x))
+                Y_.append(dp(temp_y))
+                Z_.append(dp(temp_z))
+                Pusin_.append(dp(temp_pusin))
+                Gamma_.append(dp(temp_gamma))
+                V_.append(dp(temp_v))
+                Mju_.append(dp(temp_mju))
+
+# 绘制静态轨迹------------------------------------------------------------------------------------------------------    
+
+
+            # print('sss=',X_[0])
+            if i+1 == self.n_test:
+                fig = plt.figure(1)
+                ax1 = plt.axes(projection='3d')
+                for j in range(self.n_agent):  
+
+                    c=random.randint(0,len(color)-1)
+                    
+                    ax1.plot3D(dp(X_[j]), dp(Y_[j]), dp(Z_[j]), color[c], alpha = 0.3,ms=1, linestyle = '-')
+                    # if j == 0:
+                    #     ax1.plot3D(dp(X_[j]), dp(Y_[j]), dp(Z_[j]), 'royalblue', ms=2, linestyle = '-')
+                        
+                    ax1.scatter(dp(X_)[j][0], dp(Y_[j])[0], dp(Z_[j])[0], c='black', s=20)
+                    ax1.set_xlabel('X', rotation=-15)
+                    ax1.set_ylabel('Y', rotation=50)
+                    ax1.set_zlabel('Z', rotation=90)
+                    
+                    
+                    # # plotting white points 
+                    MAX = 5 # I wanted -3 to 3 in each direction 
+                    for direction in (-1, 1): 
+                        for point in np.diag(direction * MAX * np.array([250,250,250])): 
+                          ax1.plot([point[0]], [point[1]], [point[2]], 'w') 
+                ax1.view_init(elev=45,    # 仰角
+                          azim=0    # 方位角
+                        )                
+
+                plt.savefig('./Trajectory.png',bbox_inches = 'tight')
+                plt.show()
+                
+                
+            if i+1 == self.n_test:                
+                fig = plt.figure(3)
+                for j in range(self.n_agent):  
+                    plt.plot(Step,dp(V_)[j])
+                plt.show()
+
+#-------------------------------------------------------------------------------------------------
+
+
+            if i+1 == self.n_test:
+                #新建一个文件夹用来存放数据          
+                path = "./Result/"
+                # 定义文件夹名称
+                name = "test_result_" 
+                
+                i_=0 
+              
+                while True:
+                    
+                    isExists = os.path.exists(path+name+str(i_))
+                    isExists_next = os.path.exists(path+name+str(i_+1))
+                    
+                    if not isExists:
+                        os.makedirs(path+name+str(i_)) 
+                        # 创建一个新文件夹用来存放动图
+                        os.makedirs("./Result/test_result_"+str(i_)+"/Gif")   
+                        j_=i_                  
+                        break
+                    elif isExists and not isExists_next:
+                        os.makedirs(path+name+str(i_+1))
+                        # 创建一个新文件夹用来存放动图
+                        os.makedirs("./Result/test_result_"+str(i_+1)+"/Gif") 
+                        j_=i_+1
+                        break
+                    elif isExists and isExists:
+                        i_+=1
+                        continue
+    
+                
+                # fig = plt.figure(2)
+                # ax = plt.axes(projection='3d')
+                
+                # fig = plt.figure(figsize=(20,14),facecolor='white')    
+                fig = plt.figure(figsize=(20,14),facecolor='white')  
+                # fig = plt.figure(2)   
+                ax = fig.gca(fc='whitesmoke',projection='3d')
+                
+                
+                x_0, x_1, x_2, x_3 = [],[],[],[]
+                y_0, y_1, y_2, y_3 = [],[],[],[]
+                z_0, z_1, z_2, z_3 = [],[],[],[]
+                for i in range(self.n_agent):
+                    x_0.append(dp(X_)[i][0])
+                    y_0.append(dp(Y_)[i][0])
+                    z_0.append(dp(Z_)[i][0])
+                    
+                    x_1.append(dp(X_)[i][len(X_[j])//3])
+                    y_1.append(dp(Y_)[i][len(X_[j])//3])
+                    z_1.append(dp(Z_)[i][len(X_[j])//3])
+                    
+                    x_2.append(dp(X_)[i][len(X_[j])*2//3])
+                    y_2.append(dp(Y_)[i][len(X_[j])*2//3])
+                    z_2.append(dp(Z_)[i][len(X_[j])*2//3])
+                    
+                    x_3.append(dp(X_)[i][-1])
+                    y_3.append(dp(Y_)[i][-1])
+                    z_3.append(dp(Z_)[i][-1])
+                    
+                ax.plot3D(xs=x_0,    # x 轴坐标
+                          ys=y_0,    # y 轴坐标
+                          zs=z_0,    # z 轴坐标
+                          zdir='z',    # 
+                          c='red',    # color
+                          marker='.',    # 标记点符号
+                          mfc='red',    # marker facecolor
+                          mec='black',    # marker edgecolor
+                          ms=10,    # size
+                          linestyle = '--'
+                        )
+                ax.plot3D(xs=x_1,    # x 轴坐标
+                          ys=y_1,    # y 轴坐标
+                          zs=z_1,    # z 轴坐标
+                          zdir='z',    # 
+                          c='red',    # color
+                          marker='.',    # 标记点符号
+                          mfc='red',    # marker facecolor
+                          mec='black',    # marker edgecolor
+                          ms=10,    # size
+                          linestyle = '--'
+                        )
+                ax.plot3D(xs=x_2,    # x 轴坐标
+                          ys=y_2,    # y 轴坐标
+                          zs=z_2,    # z 轴坐标
+                          zdir='z',    # 
+                          c='red',    # color
+                          marker='.',    # 标记点符号
+                          mfc='red',    # marker facecolor
+                          mec='black',    # marker edgecolor
+                          ms=10,    # size
+                          linestyle = '--'
+                        )
+                ax.plot3D(xs=x_3,    # x 轴坐标
+                          ys=y_3,    # y 轴坐标
+                          zs=z_3,    # z 轴坐标
+                          zdir='z',    # 
+                          c='red',    # color
+                          marker='.',    # 标记点符号
+                          mfc='red',    # marker facecolor
+                          mec='black',    # marker edgecolor
+                          ms=10,    # size
+                          linestyle = '--'
+                        )
+                
+
+                for j in range(self.n_agent):
+
+
+                    uav = UAV_structure(168, 120, 144, dp(X_)[j][-1], dp(Y_)[j][-1], dp(Z_)[j][-1], dp(Gamma_)[j][-1], dp(Pusin_)[j][-1], dp(Mju_)[j][-1])
+                    b = uav.structure()                    
+                    ax.plot3D(xs=dp(b)[0],    # x 轴坐标
+                              ys=dp(b)[1],    # y 轴坐标
+                              zs=dp(b)[2],    # z 轴坐标
+                              zdir='z',    # 
+                              c='red',    # color
+                              marker='.',    # 标记点符号
+                              mfc='r',    # marker facecolor
+                              mec='black',    # marker edgecolor
+                              ms=2,    # size
+                              linestyle = '-'
+                            )
+                    
+
+                    ax.plot3D(X_[j], Y_[j], Z_[j], 'royalblue',linestyle = '--', alpha = 0.3)
+                    ax.set(xlabel='X', ylabel='Y', zlabel='Z') 
+                    ax.scatter(dp(X_)[j][0], dp(Y_[j])[0], dp(Z_[j])[0], c='red', s=10) 
+                    
+                    ax.view_init(elev=45,    # 仰角
+                              azim=0    # 方位角
+                            )
+                
+                    MAX = 4 # I wanted -3 to 3 in each direction 
+                    for direction in (-1, 1): 
+                        for point in np.diag(direction * MAX * np.array([1000,1000,1000])): 
+                          ax.plot([point[0]], [point[1]], [point[2]], 'w')  
+                          
+                    ax.set(xlabel='X',
+                            ylabel='Y',
+                            zlabel='Z')
+
+                # 设置坐标轴标题和刻度
+                # ax.set(xlabel='X',
+                #         ylabel='Y',
+                #         zlabel='Z',
+                #         xlim=(-15000, 15000),
+                #         ylim=(-2000,20000),
+                #         zlim=(-20000, 1000)
+                #       )
+                      
+                plt.savefig('./Result/test_result_'+str(j_)+'/Gif/Trajectory%d.png'%i,bbox_inches = 'tight')
+      
+
+
+
+
+
+
+
+# 绘制动态态轨迹-------------------------------------------------------------------------------------------------
+
+
+            # if i+1 == self.n_test:
+            #     #新建一个文件夹用来存放数据          
+            #     path = "./Result/"
+            #     # 定义文件夹名称
+            #     name = "test_result_" 
+                
+            #     i_=0 
+              
+            #     while True:
+                    
+            #         isExists = os.path.exists(path+name+str(i_))
+            #         isExists_next = os.path.exists(path+name+str(i_+1))
+                    
+            #         if not isExists:
+            #             os.makedirs(path+name+str(i_)) 
+            #             # 创建一个新文件夹用来存放动图
+            #             os.makedirs("./Result/test_result_"+str(i_)+"/Gif")   
+            #             j_=i_                  
+            #             break
+            #         elif isExists and not isExists_next:
+            #             os.makedirs(path+name+str(i_+1))
+            #             # 创建一个新文件夹用来存放动图
+            #             os.makedirs("./Result/test_result_"+str(i_+1)+"/Gif") 
+            #             j_=i_+1
+            #             break
+            #         elif isExists and isExists:
+            #             i_+=1
+            #             continue
+    
+                
+            #     # fig = plt.figure(2)
+            #     # ax = plt.axes(projection='3d')
+                
+            #     # fig = plt.figure(figsize=(20,14),facecolor='white')    
+            #     fig = plt.figure(figsize=(20,14),facecolor='white')  
+            #     # fig = plt.figure(2)   
+            #     ax = fig.gca(fc='whitesmoke',projection='3d')
+                
+            #     for i in range(len(X_[0])):
+            #         plt.cla() 
+            #         for j in range(self.n_agent):
+
+            #             uav = UAV_structure(168, 120, 144, dp(X_)[j][i], dp(Y_)[j][i], dp(Z_)[j][i], dp(Gamma_)[j][i], dp(Pusin_)[j][i], dp(Mju_)[j][i])
+            #             b = uav.structure()                    
+            #             ax.plot3D(xs=dp(b)[0],    # x 轴坐标
+            #                       ys=dp(b)[1],    # y 轴坐标
+            #                       zs=dp(b)[2],    # z 轴坐标
+            #                       zdir='z',    # 
+            #                       c='red',    # color
+            #                       marker='.',    # 标记点符号
+            #                       mfc='r',    # marker facecolor
+            #                       mec='black',    # marker edgecolor
+            #                       ms=2,    # size
+            #                       linestyle = '-'
+            #                     )
+
+            #             ax.plot3D(X_[j][:i+1], Y_[j][:i+1], Z_[j][:i+1], 'royalblue', alpha = 0.3 ,linestyle = '--')
+            #             # ax.set(xlabel='X', ylabel='Y', zlabel='Z') 
+
+                        
+            #             ax.view_init(elev=45,    # 仰角
+            #                       azim=0    # 方位角
+            #                     )
+                        
+            #             MAX = 4 # I wanted -3 to 3 in each direction 
+            #             for direction in (-1, 1): 
+            #                 for point in np.diag(direction * MAX * np.array([1000,1000,1000])): 
+            #                   ax.plot([point[0]], [point[1]], [point[2]], 'w')   
+
+
+            #             ax.set(xlabel='X',
+            #                     ylabel='Y',
+            #                     zlabel='Z',)            
+            #             # 设置坐标轴标题和刻度
+            #             # ax.set(xlabel='X',
+            #             #         ylabel='Y',
+            #             #         zlabel='Z',
+            #             #         xlim=(-8000, 8000),
+            #             #         ylim=(-1000,15000),
+            #             #         zlim=(-15000, 1000)
+            #             #       )
+                              
+            #             plt.savefig('./Result/test_result_'+str(j_)+'/Gif/Trajectory%d.png'%i,bbox_inches = 'tight')
+            #     ax.scatter(dp(X_)[j][0], dp(Y_[j])[0], dp(Z_[j])[0], c='red', s=5)        
+            #     #dpi合成gif
+                
+            #     fig_ = []
+            #     for i in range(0, len(X_[0])):
+            #         # fig.append(imageio.imread("Trajectory" + str(i) + ".png"))
+            #         fig_.append(imageio.imread("./Result/test_result_"+str(j_)+"/Gif/Trajectory" + str(i) + ".png"))    
+            #         # fig.append(imageio.imread("./graph/paper/Good Result/test_result_21/Gif/Trajectory" + str(i) + ".png"))    
+                  
+            #     gif_1 = "./Result/test_result_"+str(j_)+"/Gif/Trajectory.gif"
+            #     imageio.mimsave(gif_1, fig_, duration = 0.001)  
+                
+# # #-----------------------------------------------------------------------------------------------------------------          
+
+
+                
+# # # -------------------------------------------------------------------------------------------------------------  
+            
+
+#             if hasattr(env, 'rescaleReward'):
+#                 scaled += [ep_ret]
+#                 ep_ret = env.rescaleReward(ep_ret, ep_len)
+#             returns += [ep_ret]
+#             lengths += [ep_len]
+#             episodes += [episode]
+#         returns = np.stack(returns, axis=0)
+#         lengths = np.stack(lengths, axis=0)
+#         self.logger.log(test_episode_reward=returns, test_episode_len=lengths, test_round=None)
+#         print(returns)
+#         print(f"{self.n_test} episodes average accumulated reward: {returns.mean()}")
+#         if hasattr(env, 'rescaleReward'):
+#             print(f"scaled reward {np.mean(scaled)}")
+#         with open(f"checkpoints/{self.name}/test.pickle", "wb") as f:
+#             pickle.dump(episodes, f)
+#         with open(f"checkpoints/{self.name}/test.txt", "w") as f:
+#             for episode in episodes:
+#                 for step in episode:
+#                     f.write(f"{step[0]}, {step[1]}, {step[2]}\n")
+#                 f.write("\n")
+#         self.logger.log(test_time=time.time()-time_t)
+#         return returns.mean()
+    
+
+
+
+
+
+#     def test(self):
+#         """
+#         The environment should return sth like [n_agent, dim] or [batch_size, n_agent, dim] in either numpy or torch.
+#         """
+#         time_t = time.time()
+#         length = self.test_length
+#         returns = []
+#         scaled = []
+#         lengths = []
+#         episodes = []
+#         for i in trange(self.n_test):
+           
+# # test uav---------------------------------------------------------------------------------------------------------
+
+#             X = [[]]*self.n_agent 
+#             Y = [[]]*self.n_agent 
+#             # Z = [[]]*self.n_agent 
+#             # Pusin = [[]]*self.n_agent 
+#             # Gamma = [[]]*self.n_agent 
+#             # Mju = [[]]*self.n_agent 
+
+
+#             X_ = []
+#             Y_ = []
+#             # Z_ = []
+#             # Pusin_ = []
+#             # Gamma_ = []
+#             # Mju_ = []
+            
+# # --------------------------------------------------------------------------------------------------------------
+
+   
+#             episode = []
+#             env = self.env_test
+#             env.reset()
+#             d, ep_ret, ep_len = np.array([False]), 0, 0
+#             # while not(d.any() or (ep_len == length)):
+#             while not (ep_len == length):
+#                 s = env.get_state_() # dim = 2 or 3 (vectorized)
+#                 s = torch.as_tensor(s, dtype=torch.float, device=self.device)
+#                 a = self.agent.act(s).sample() # a is a tensor
+#                 # a = self.agent.act(s)
+#                 a = a.tanh()
+
+#                 a = a.detach().cpu().numpy() # might not be squeezed at the last dimension. env should deal with this though.
+#                 s1, r, d, _ = env.step(a)
+#                 episode += [(s.tolist(), a.tolist(), r.tolist())]
+#                 d = np.array(d)
+#                 ep_ret += r.sum()
+#                 ep_len += 1
+#                 self.logger.log(interaction=None)   
+
+#                 s1 = dp(env.get_state_real(dp(s1)))
+#                 a = dp(env.get_action_real(dp(a))) 
+                
+#                 for k in range(self.n_agent):
+#                     s1 = dp(s1)
+#                     a = dp(a)
+#                     k = dp(k)
+#                     X[k].append(s1[k][0])
+#                     Y[k].append(s1[k][1])
+#                     # Z[k].append(s1[k][2])
+#                     # Pusin[k].append(s1[k][3])
+#                     # Gamma[k].append(s1[k][4])
+#                     # Mju[k].append(s1[k][6])  
+
+                
+#                 # episode += [(s.tolist(), a.tolist(), r.tolist())]
+#                 # d = np.array(d)
+#                 # ep_ret += r.sum()
+#                 # ep_len += 1
+#                 # self.logger.log(interaction=None)   
+            
+# # --------------------------------------------------------------------------------------------------------------   
+
+# # test uav : plot_trajectory----------------------------------------------------------------------------------------------------   
+
+#             color = ['red','royalblue','deeppink','lightpink','gold','green','peru','fuchsia','teal','darkred','orange','orange']
+#             p_x=dp(X[0])
+#             p_y=dp(Y[0])
+#             # p_z=dp(Z[0])
+#             # p_pusin=dp(Pusin[0])
+#             # p_gamma=dp(Gamma[0])
+#             # p_mju=dp(Mju[0])
+#             # print('sss=',len(p_x))           
+          
+#             for j in range(self.n_agent):
+#                 temp_x=[]
+#                 temp_y=[]
+#                 # temp_z=[]
+#                 # temp_pusin=[]
+#                 # temp_gamma=[]
+#                 # temp_mju=[]
+                
+#                 q=dp(j)
+#                 for r in range(self.test_length):
+#                     r=dp(r)
+#                     temp_x.append(dp(p_x[q+r*self.n_agent]))
+#                     temp_y.append(dp(p_y[q+r*self.n_agent]))
+#                     # temp_z.append(dp(p_z[q+r*self.n_agent]))
+#                     # temp_pusin.append(dp(p_pusin[q+r*self.n_agent]))
+#                     # temp_gamma.append(dp(p_gamma[q+r*self.n_agent]))
+#                     # temp_mju.append((p_mju[q+r*self.n_agent]))
+#                 X_.append(dp(temp_x))
+#                 Y_.append(dp(temp_y))
+#                 # Z_.append(dp(temp_z))
+#                 # Pusin_.append(dp(temp_pusin))
+#                 # Gamma_.append(dp(temp_gamma))
+#                 # Mju_.append(dp(temp_mju))
+
+# # 绘制静态轨迹------------------------------------------------------------------------------------------------------    
+
+
+#             # print('sss=',X_[0])
+#             if i+1 == self.n_test:
+#                 fig = plt.figure(1)
+
+#                 for j in range(self.n_agent):  
+
+#                     c=random.randint(0,len(color)-1)
+                    
+#                     plt.plot(dp(X_[j]), dp(Y_[j]), color[c], alpha = 0.3,ms=1, linestyle = '-')
+
+#                 plt.savefig('./Trajectory.png',bbox_inches = 'tight')
+#                 plt.show()
+
+# #-------------------------------------------------------------------------------------------------
+
+
+
+#             if hasattr(env, 'rescaleReward'):
+#                 scaled += [ep_ret]
+#                 ep_ret = env.rescaleReward(ep_ret, ep_len)
+#             returns += [ep_ret]
+#             lengths += [ep_len]
+#             episodes += [episode]
+#         returns = np.stack(returns, axis=0)
+#         lengths = np.stack(lengths, axis=0)
+#         self.logger.log(test_episode_reward=returns, test_episode_len=lengths, test_round=None)
+#         print(returns)
+#         print(f"{self.n_test} episodes average accumulated reward: {returns.mean()}")
+#         if hasattr(env, 'rescaleReward'):
+#             print(f"scaled reward {np.mean(scaled)}")
+#         with open(f"checkpoints/{self.name}/test.pickle", "wb") as f:
+#             pickle.dump(episodes, f)
+#         with open(f"checkpoints/{self.name}/test.txt", "w") as f:
+#             for episode in episodes:
+#                 for step in episode:
+#                     f.write(f"{step[0]}, {step[1]}, {step[2]}\n")
+#                 f.write("\n")
+#         self.logger.log(test_time=time.time()-time_t)
+#         return returns.mean()
+
+
+
+
+
+
+
+    
 
     def rollout_env(self, length = 0):
         """
@@ -403,24 +926,18 @@ class OnPolicyRunner:
         time_t = time.time()
         if length <= 0:
             length = self.rollout_length
-        # print(length)
         env = self.env_learn
         trajs = []
         traj = TrajectoryBuffer(device=self.device)
+        
         start = time.time()
         for t in range(length):
-        # d, ep_len = np.array([False]), 0
-        # while not(d.any() or (ep_len == length)):
-            # ep_len+=1
             s = env.get_state_()
             s = torch.as_tensor(s, dtype=torch.float, device=self.device)
             dist = self.agent.act(s)
             a = dist.sample()
-
             logp = dist.log_prob(a)
-   #-----------------------------------------------         
             # a = a.tanh()
-   #-----------------------------------------------  
             a = a.detach().cpu().numpy()
             s1, r, d, _ = env.step(a)
             traj.store(s, a, r, s1, d, logp)
@@ -435,63 +952,21 @@ class OnPolicyRunner:
             if self.episode_len == self.max_episode_len:
                 d = np.zeros(d.shape, dtype=np.float32)
             d = np.array(d)
-#-----------------------------------------------------------------------------------------  
-
-#----------------------------------------------------------------------------------------- 
-            if self.env_name == 'eight':
-            
-                # if d.any() or (self.episode_len == self.max_episode_len):     
-                if self.episode_len == self.max_episode_len:                 
-                    
-                    self.logger.log(episode_reward=self.episode_reward.sum(), episode_len = self.episode_len, episode=None)
-                    try:
-                        self.episode_reward, self.episode_len = 0, 0#TODO:catch up the error
-                    except Exception as e:
-                        print('reset error!:', e)
-                        self.episode_reward, self.episode_len =  0, 0  # TODO:catch up the error
-                        if self.model_based == False:
-                            trajs += traj.retrieve()
-                            traj = TrajectoryBuffer(device=self.device)
-                if self.episode_len == self.max_episode_len:
-                    if self.model_based:
-                        trajs += traj.retrieve()
-                        traj = TrajectoryBuffer(device=self.device)
-#----------------------------------------------------------------------------------------- 
-
-#--------------------------------------------------------------------------------------    
-
-            else:
-            # for other_env
-                if d.any() or (self.episode_len == self.max_episode_len):      
-                # if self.episode_len == self.max_episode_len:                 
-                    
-                    self.logger.log(episode_reward=self.episode_reward.sum(), episode_len = self.episode_len, episode=None)
-                    try:
-                        _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0#TODO:catch up the error
-                    except Exception as e:
-                        print('reset error!:', e)
-                        _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0  # TODO:catch up the error
-                        if self.model_based == False:
-                            trajs += traj.retrieve()
-                            traj = TrajectoryBuffer(device=self.device)
-                            
-                if self.episode_len == self.max_episode_len:
-                    if self.model_based:
-                        trajs += traj.retrieve()
-                        traj = TrajectoryBuffer(device=self.device)
-#--------------------------------------------------------------------------------------    
-
-
-                
-
-
-        # print('len=',ep_len)
+            #if d.any() or (self.episode_len == self.max_episode_len):
+            if self.episode_len == self.max_episode_len:
+                self.logger.log(episode_reward=self.episode_reward.sum(), episode_len = self.episode_len, episode=None)
+                try:
+                    _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0#TODO:catch up the error
+                except Exception as e:
+                    print('reset error!:', e)
+                    _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0  # TODO:catch up the error
+                trajs += traj.retrieve()
+                traj = TrajectoryBuffer(device=self.device)
         end = time.time()
         print('time in 1 episode is ',end-start)
         trajs += traj.retrieve(length=self.max_episode_len)
         self.logger.log(env_rollout_time=time.time()-time_t)
         return trajs
-    
     
     def rollout_model(self, trajs, length=0):
         time_t = time.time()
@@ -499,10 +974,6 @@ class OnPolicyRunner:
         if length <= 0:
             length = self.model_traj_length
         s = [traj['s'] for traj in trajs]
-
-                 
-        # s = torch.as_tensor(s, dtype=torch.float32, device=self.device)
-
         s = torch.stack(s, dim=0)
         b, T, n, depth = s.shape
         s = s.view(-1, n, depth)
@@ -523,50 +994,13 @@ class OnPolicyRunner:
         self.logger.log(model_rollout_time=time.time()-time_t)
         return trajs
     
-#-------------------------------------------------------------------------------------------------
-   
-    # def updateModel(self, n=0):
-    #     if n <= 0:
-    #         n = self.n_model_update
-        
-        
-    #     def mp_update(i_model_update):
-    #        trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #        trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
-    #        self.agent.updateModel(trajs, length=self.model_update_length)
-    #        if i_model_update % self.model_validate_interval == 0:
-    #            validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #            validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
-    #            rel_error = self.agent.validateModel(validate_trajs, length=self.model_update_length)
-    #            # if rel_error < self.model_error_thres:
-    #            #     break
-    #        return               
-            
-    #     pool=mp.Pool()
-    #     # res = pool.map_async(mp_update, range(n))
-        
-    #     for i in trange(n):
-    #         pool.apply_async(mp_update, args = (i,))
-
-            
-    #     pool.close()
-    #     pool.join()
-
-    #     self.logger.log(model_update = n + 1)
-    
-
-
-#-------------------------------------------------------------------------------------------------
-
     def updateModel(self, n=0):
         if n <= 0:
             n = self.n_model_update
         for i_model_update in trange(n):
             trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
             trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
-            
             self.agent.updateModel(trajs, length=self.model_update_length)
-
             if i_model_update % self.model_validate_interval == 0:
                 validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
                 validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
@@ -574,40 +1008,6 @@ class OnPolicyRunner:
                 if rel_error < self.model_error_thres:
                     break
         self.logger.log(model_update = i_model_update + 1)
-
-
-#----------------------------------------------------------------------------------------------
-
-
-    # def updateModel(self, n=0):
-    #     if n <= 0:
-    #         n = self.n_model_update
-    #     for i_model_update in trange(n):
-    #         if i_model_update % (self.rollout_length//self.model_update_length) == 0:
-    #             trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #         trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
-            
-    #         self.agent.updateModel(trajs, length=self.model_update_length)
-            
-    #         if i_model_update % self.model_validate_interval == 0:
-    #             validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #             validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
-    #             rel_error = self.agent.validateModel(validate_trajs, length=self.model_update_length)
-    #             if rel_error < self.model_error_thres:
-    #                 break
-    #     self.logger.log(model_update = i_model_update + 1)
-
-
-
-
-
-
-
-
-
-
-
-
     
     def testModel(self, n = 0):
         trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
@@ -647,14 +1047,12 @@ class IA2C(nn.ModuleList):
             self.action_shape = self.action_dim
         else:
             self.action_shape = self.action_space.shape
-            # self.action_dim = 1
-            # for j in self.action_shape:
-            #     self.action_dim *= j
-            self.action_dim = self.action_space.shape[0]
-            self.action_low = self.action_space.low
-            self.action_high = self.action_space.high
+            self.action_dim = 1
+            for j in self.action_shape:
+                self.action_dim *= j
+            self.action_low = self.action_space.low.item()
+            self.action_high = self.action_space.high.item()
             self.squeeze = agent_args.squeeze
-
         # if adj diag is not one, we should add a eye matrix
         agent_args.adj = (torch.as_tensor(agent_args.adj, device=self.device, dtype=torch.float)>0) | torch.eye(self.n_agent, device=device).bool()
         self.adj = torch.as_tensor(agent_args.adj, device=self.device, dtype=torch.float)
@@ -837,7 +1235,7 @@ class IA2C(nn.ModuleList):
         d_a = a.size()[-1]
         s = s.view(-1, n, d_s)
         a = a.view(-1, n, d_a)
-        logp = logp.view(-1, n, d_a)
+        logp = logp.view(-1, n, 1)
         advantages_old = advantages_old.view(-1, n, 1)
         returns = returns.view(-1, n, 1)
         value_old = value_old.view(-1, n, 1)
@@ -935,10 +1333,9 @@ class IC3Net(nn.ModuleList):
             self.action_shape = self.action_dim
         else:
             self.action_shape = self.action_space.shape
-            # self.action_dim = 1
-            # for j in self.action_shape:
-            #     self.action_dim *= j
-            self.action_dim = self.action_space.shape[0]
+            self.action_dim = 1
+            for j in self.action_shape:
+                self.action_dim *= j
             self.action_low = self.action_space.low
             self.action_high = self.action_space.high
             self.squeeze = agent_args.squeeze
@@ -1019,7 +1416,7 @@ class IC3Net(nn.ModuleList):
         d_a = a.size()[-1]
         s = s.view(-1, n, d_s)
         a = a.view(-1, n, d_a)
-        logp = logp.view(-1, n, d_a)
+        logp = logp.view(-1, n, 1)
         advantages_old = advantages_old.view(-1, n, 1)
         returns = returns.view(-1, n, 1)
         value_old = value_old.view(-1, n, 1)
@@ -1087,7 +1484,6 @@ class IC3Net(nn.ModuleList):
 
     def inference_hidden_state(self, s):
         # encode the state
-        s=s.to(self.device)
         s_encoding = self.activation_function(self.obs_encoder(s))
 
         # decide which agent to communication
@@ -1162,6 +1558,7 @@ class IC3Net(nn.ModuleList):
                     means = means.squeeze(0)
                     stds = stds.squeeze(0)
                 return Normal(means, stds)
+                # return means
 
     def get_logp(self, s, a):
         s = torch.as_tensor(s, dtype=torch.float32, device=self.device)
@@ -1270,7 +1667,9 @@ class DPPOAgent(nn.ModuleList):
             
         # else:
         #     self.action_shape = self.action_space.shape
-        #     self.action_dim = 1
+        #     # print(self.action_shape)
+        #     # self.action_dim = self.action_space.shape[0]
+        #     self.action_dim = 2
         #     for j in self.action_shape:
         #         self.action_dim *= j
         #     self.action_low = self.action_space.low.item()
@@ -1295,6 +1694,15 @@ class DPPOAgent(nn.ModuleList):
         self.pi_args = agent_args.pi_args
         self.v_args = agent_args.v_args
         self.collect_pi, self.actors = self._init_actors()
+        
+        #load_net-----------------------------------------------------------
+
+        # self.actors.load_state_dict(torch.load(test_actors_model, map_location={'cuda:5':'cuda:0'}))      
+        self.actors.load_state_dict(torch.load(test_actors_model, map_location={'cuda:1':'cuda:0'}))    
+        # self.actors.load_state_dict(torch.load(test_actors_model))  
+        #-------------------------------------------------------------------
+
+        
         self.collect_v, self.vs = self._init_vs()
 
         self.optimizer_v = Adam(self.vs.parameters(), lr=self.lr_v)
@@ -1326,12 +1734,12 @@ class DPPOAgent(nn.ModuleList):
                 means, stds = [], []
                 for i in range(self.n_agent):
                     mean, std = self.actors[i](s[i])
+                    # print('std=',std)
                     means.append(mean)
                     
-
-                    stds.append(std)
-                    # stds.append(std.exp())
                     
+                    # stds.append(std)
+                    stds.append(std.clamp(-16, 2).exp())
                     
                     
                 means = torch.stack(means, dim=1)
@@ -1339,7 +1747,11 @@ class DPPOAgent(nn.ModuleList):
                 while means.dim() > dim:
                     means = means.squeeze(0)
                     stds = stds.squeeze(0)
+                    
+                # print('aaa=',means)
+                # print('sss=',stds)               
                 return Normal(means, stds)
+                # return means
     
     def get_logp(self, s, a):
         """
@@ -1383,9 +1795,9 @@ class DPPOAgent(nn.ModuleList):
                 tensor_shape = traj[name].shape
                 full_part_shape = [max_traj_length - tensor_shape[0]] + list(tensor_shape[1:])
                 if name == 'd':
-                    traj_all[name].append(torch.cat([traj[name], torch.ones(full_part_shape, dtype=torch.bool, device=self.device)], dim=0))
+                    traj_all[name].append(torch.cat([traj[name], torch.ones(full_part_shape, dtype=torch.bool)], dim=0))
                 else:
-                    traj_all[name].append(torch.cat([traj[name], torch.zeros(full_part_shape, dtype=traj[name].dtype, device=self.device)], dim=0))
+                    traj_all[name].append(torch.cat([traj[name], torch.zeros(full_part_shape, dtype=traj[name].dtype)], dim=0))
         traj = {name:torch.stack(value, dim=0) for name, value in traj_all.items()}
 
         for i_update in range(self.n_update_pi):
@@ -1398,20 +1810,19 @@ class DPPOAgent(nn.ModuleList):
 
             b, T, n, d_s = s.size()
 
-            d_a = a.size()[-1]  
-
+            d_a = a.size()[-1]
+            d_p = logp.size()[-1]
             
             s = s.view(-1, n, d_s)
             a = a.view(-1, n, d_a)
-            
+            logp = logp.view(-1, n, d_p)    # for DMPO            
             #-------------------------------------------------------------------------
-            # logp = np.squeeze(logp, axis=0)   #for uav_env：CPPO DPPO
-            # print('aaa=',d_a)
-            # print('sss=',d_s)
+            # logp = np.squeeze(logp, axis=0)   #for uav_env
+
             #-------------------------------------------------------------------------     
             
             
-            logp = logp.view(-1, n, d_a)    
+            # logp = logp.view(-1, n, 1)    #pre_code
 
             advantages_old = advantages_old.view(-1, n, 1)
             returns = returns.view(-1, n, 1)
@@ -1419,10 +1830,7 @@ class DPPOAgent(nn.ModuleList):
             # s, a, logp, adv, ret, v are now all in shape [-1, n_agent, dim]
 
             batch_total = logp.size()[0]
-
             batch_size = int(batch_total/n_minibatch)
-            # print('batch=',batch_size)
-
             kl_all = []
             i_pi = 0
             for i_pi in range(1):  
@@ -1432,8 +1840,6 @@ class DPPOAgent(nn.ModuleList):
                     [batch_state, batch_action, batch_logp, batch_advantages_old] = [item[idxs] for item in [batch_state, batch_action, batch_logp, batch_advantages_old]]
                 batch_logp_new = self.get_logp(batch_state, batch_action)
                 
-                # print('sss=',batch_state.size())
-                # print('aaa=',batch_action.size())
 
                 
                 logp_diff = batch_logp_new - batch_logp
@@ -1482,7 +1888,7 @@ class DPPOAgent(nn.ModuleList):
 
     def load(self, state_dict):
         self.load_state_dict(state_dict[self.logger.prefix])
-        
+
 #_____________________________________________________________________________________________________--
 
     def save_nets(self, dir_name,episode):
@@ -1500,7 +1906,6 @@ class DPPOAgent(nn.ModuleList):
 
         # print('RL load successfully')
 #_____________________________________________________________________________________________________--
-        
 
     def _evalV(self, s):
         # Requires input in shape [-1, n_agent, dim]
@@ -1520,6 +1925,7 @@ class DPPOAgent(nn.ModuleList):
                 actors.append(CategoricalActor(**self.pi_args._toDict()).to(self.device))
             else:
                 actors.append(GaussianActor(action_dim=self.action_dim, **self.pi_args._toDict()).to(self.device))
+        
         return collect_pi, actors
     
     def _init_vs(self):
@@ -1573,15 +1979,7 @@ class ModelBasedAgent(nn.ModuleList):
         self.lr_p = agent_args.lr_p
         self.p_args = agent_args.p_args
         self.ps = GraphConvolutionalModel(self.logger, self.adj, self.observation_dim, self.action_dim, self.n_agent, self.p_args).to(self.device)
-        
-        # self.ps = self.ps.cuda()
-        # torch.backends.cudnn.benchmark = True
-        # self.ps = torch.nn.DataParallel(self.ps, device_ids=range(torch.cuda.device_count()))
-        # # self.ps = nn.DataParallel(self.ps)
-        
-        
         self.optimizer_p = Adam(self.ps.parameters(), lr=self.lr)
-
 
     def updateModel(self, trajs, length=1):
         """
@@ -1592,37 +1990,23 @@ class ModelBasedAgent(nn.ModuleList):
         time_t = time.time()
         loss_total = 0.
         ss, actions, rs, s1s, ds = [], [], [], [], []
-        
-        
-        
         for traj in trajs:
             s, a, r, s1, d = traj["s"], traj["a"], traj["r"], traj["s1"], traj["d"]
-            s, a, r, s1, d = [torch.as_tensor(item, device=self.device) for item in [s, a, r, s1, d]]          
+            s, a, r, s1, d = [torch.as_tensor(item, device=self.device) for item in [s, a, r, s1, d]]
             ss.append(s)
             actions.append(a)
             rs.append(r)
             s1s.append(s1)
-            ds.append(d)  
-            
-
+            ds.append(d)
         ss, actions, rs, s1s, ds = [torch.stack(item, dim=0) for item in [ss, actions, rs, s1s, ds]]
-        # loss, rel_state_error = self.ps.train(ss, actions, rs, s1s, ds, length) # [n_traj, T, n_agent, dim]
         loss, rel_state_error = self.ps.train(ss, actions, rs, s1s, ds, length) # [n_traj, T, n_agent, dim]
-     
         self.optimizer_p.zero_grad()
         loss.sum().backward()
         # torch.nn.utils.clip_grad_norm_(parameters=self.ps.parameters(), max_norm=5, norm_type=2)
         self.optimizer_p.step()
-#——————————————————————————————————————————————————————————————————————————————————        
         self.logger.log(p_loss_total=loss.sum(), p_update=None)
         self.logger.log(model_update_time=time.time()-time_t)
-#——————————————————————————————————————————————————————————————————————————————————   
         return rel_state_error.item()
-    
-    
-
-
-
     
     def validateModel(self, trajs, length=1):
         with torch.no_grad():
@@ -1655,9 +2039,6 @@ class ModelBasedAgent(nn.ModuleList):
                 a = a.unsqueeze(-1)
             s = s.to(self.device)
             a = a.to(self.device)
-    #---------------------------------------------------------------------------------        
-            # rs, s1s, ds = self.ps.predict(s, (0.2*a).tanh())     # for UAV
-   #---------------------------------------------------------------------------------           
             rs, s1s, ds = self.ps.predict(s, a)
             return rs.detach(), s1s.detach(), ds.detach(), s.detach()
     

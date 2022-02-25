@@ -1110,14 +1110,27 @@ class TraCIVehicle(KernelVehicle):
             frac = [val[1] for val in self.master_kernel.network.rts[edge]]
             route_id = 'route{}_{}'.format(edge, np.random.choice(
                 [i for i in range(num_routes)], size=1, p=frac)[0])
-
+        # print('aaaaaaaaaaaaaa')
         self.kernel_api.vehicle.addFull(
             veh_id,
             route_id,
             typeID=str(type_id),
             departLane=str(lane),
             departPos=str(pos),
-            departSpeed=str(speed))
+            departSpeed=str(speed))   
+        # print('bbbbbbbbbb')
+
+        # if veh_id!='rl_0':
+        #     self.kernel_api.vehicle.addFull(
+        #         veh_id,
+        #         route_id,
+        #         typeID=str(type_id),
+        #         departLane=str(lane),
+        #         departPos=str(pos),
+        #         departSpeed=str(speed)) 
+        
+
+
 
     def get_max_speed(self, veh_id, error=-1001):
         """See parent class."""

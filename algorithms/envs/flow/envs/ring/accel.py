@@ -175,7 +175,7 @@ class AccelEnv(Env):
         position.
         """
         obs = super().reset()
-
+        # print('ccccccccccccccccc')
         for veh_id in self.k.vehicle.get_ids():
             self.absolute_position[veh_id] = self.k.vehicle.get_x_by_id(veh_id)
             self.prev_pos[veh_id] = self.k.vehicle.get_x_by_id(veh_id)

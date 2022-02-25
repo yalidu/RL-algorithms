@@ -413,7 +413,6 @@ class OVMCarFollowing:
     def get_accel(self, v, v_lead, h, alpha, beta, h_go=-1):
         """
         Get target acceleration using OVM controller.
-
         Args:
             v (float): current vehicle speed
             v_lead (float): leading vehicle speed

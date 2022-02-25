@@ -134,6 +134,41 @@ class LargeGridEnv(TrafficSimulator):
             plot_cdf(data)
             plt.ylabel(name)
             fig.savefig(self.output_path + self.name + '_' + name + '.png')
+            
+            
+    def reset(self):
+        
+
+        
+        state = super().reset()
+
+        # state = self.env.reset()
+
+        state = np.array(state, dtype=np.float32)
+        self.state = state
+        # print(state)
+        return state
+    
+    def step(self, action):
+        # super().step(action)
+        if isinstance(action, np.ndarray):
+            action = action.tolist()
+        # for action dim problem list 1 * action_dim
+        if type(action[0]) == list:
+            action = action[0]
+        state, reward, done, info = super().step(action)
+        # if self.test:
+        #     reward = self._comparable_reward()
+        state = np.array(state, dtype=np.float32)
+        reward = np.array(reward, dtype=np.float32)
+        done = np.array([done]*25, dtype=np.float32)
+        self.state=state
+        return state, reward, done, None
+
+    
+    def get_state_(self):
+        return self.state
+            
 
 
 def plot_cdf(X, c='b', label=None):
@@ -145,8 +180,8 @@ if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s [%(levelname)s] %(message)s',
                         level=logging.INFO)
     config = configparser.ConfigParser()
-    config.read('./config/config_greedy.ini')
-    base_dir = './greedy/'
+    config.read('./config/config_ma2c_nc_grid.ini')
+    base_dir = './'
     if not os.path.exists(base_dir):
         os.mkdir(base_dir)
     env = LargeGridEnv(config['ENV_CONFIG'], 2, base_dir, is_record=True, record_stat=True)

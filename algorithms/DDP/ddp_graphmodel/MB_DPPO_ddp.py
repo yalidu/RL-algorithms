@@ -20,8 +20,51 @@ from algorithms.models import CategoricalActor, EnsembledModel, SquashedGaussian
 import random
 import multiprocessing as mp
 # import torch.multiprocessing as mp
-from torch import distributed as dist
 import argparse
+import tqdm
+
+from algorithms.mbdppo import train_ddp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader
+
+
+class Dataset:
+    def __init__(self, model_buffer, samples_num, batch_size, length):
+        self.model_buffer = model_buffer
+        self.samples_num = samples_num
+        self.batch_size = batch_size
+        self.model_update_length = length
+        self.data = []
+        self.dataGenerate()
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+    def __len__(self):
+        return self.samples_num
+
+    def dataGenerate(self):
+        ss, actions, rs, s1s, ds = [], [], [], [], []
+        for i in trange(self.samples_num):
+            trajs = self.model_buffer.sampleTrajs(self.batch_size)
+            trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
+
+            for traj in trajs:
+                s, a, r, s1, d = traj["s"], traj["a"], traj["r"], traj["s1"], traj["d"]
+                s, a, r, s1, d = [torch.as_tensor(item) for item in [s, a, r, s1, d]]
+                # print('aa=',s.size)
+                ss.append(s)
+                actions.append(a)
+                rs.append(r)
+                s1s.append(s1)
+                ds.append(d)
+            self.data.append([ss, actions, rs, s1s, ds])
+        torch.save(self.data, '/home/mcd1619/MB-MARL/algorithms/mbdppo/data.pt')
+        # print('aa=',self.data.)
+        # return
+
 
 
 class MultiCollect:
@@ -36,7 +79,6 @@ class MultiCollect:
         adjacency = adjacency > 0 # Adjacency Matrix, with size n_agent*n_agent. 
         adjacency = adjacency | torch.eye(n, device=device).bool() # Should contain self-loop, because an agent should utilize its own info.
         adjacency = adjacency.to(device)
-        # print('a=',adjacency)
         self.degree = adjacency.sum(dim=1) # Number of information available to the agent.
         self.indices = []
         index_full = torch.arange(n, device=device)
@@ -200,14 +242,13 @@ class ModelBuffer:
         return [self.trajectories[i] for i in traj_idxs]
 
 class OnPolicyRunner:
-    def __init__(self, logger, run_args, alg_args, agent, env_learn, env_test, env_args,**kwargs):
+    def __init__(self, logger, run_args, alg_args, agent, env_learn, env_test, **kwargs):
         self.logger = logger
         self.name = run_args.name
         if not run_args.init_checkpoint is None:
             agent.load(run_args.init_checkpoint)
             logger.log(interaction=run_args.start_step)  
         self.start_step = run_args.start_step 
-        self.env_name = env_args.env
 
         # algorithm arguments
         self.n_iter = alg_args.n_iter
@@ -245,6 +286,7 @@ class OnPolicyRunner:
             self.model_length_schedule = alg_args.model_length_schedule
             self.model_prob = alg_args.model_prob
         self.s, self.episode_len, self.episode_reward = self.env_learn.reset(), 0, 0
+
         # load pretrained model
         self.load_pretrained_model = alg_args.load_pretrained_model
         if self.model_based and self.load_pretrained_model:
@@ -263,15 +305,11 @@ class OnPolicyRunner:
             self.updateModel(self.n_model_update_warmup) # Sample trajectories, then shorten them.
 
         for iter in trange(self.n_iter):
-            
-            
-            # if iter % self.test_interval == 0:
-            if iter % 100 == 0:
-                mean_return = self.test(iter)
+            if iter % self.test_interval == 0:
+                mean_return = self.test()
                 self.agent.save(info = mean_return)
-                
-            # if iter % 200 == 0:
-            #     self.agent.save_nets(f'./checkpoints/{self.name}',iter)
+            if iter % 200 == 0:
+                self.agent.save_nets(f'./checkpoints/{self.name}',iter)
 
 
             trajs = self.rollout_env()  #  TO cheak: rollout n_step, maybe multi trajs
@@ -280,21 +318,18 @@ class OnPolicyRunner:
            
             
 #---------------------------------------------------------------------------------------              
-            # t1=time.time()            
-            # if self.model_based:
-            #     self.model_buffer.storeTrajs(trajs)
-            #     self.updateModel()
-            # t2=time.time()
-            # print('t=',t2-t1)
-
-#---------------------------------------------------------------------------------------   
-            t1=time.time()              
+            t1=time.time()            
             if self.model_based:
                 self.model_buffer.storeTrajs(trajs)
-                if iter % 10 == 0:
-                    self.updateModel()
+                self.updateModel()
             t2=time.time()
             print('t=',t2-t1)
+
+#---------------------------------------------------------------------------------------                
+            # if self.model_based:
+            #     self.model_buffer.storeTrajs(trajs)
+            #     if iter % 200 == 0:
+            #         self.updateModel()     
 #---------------------------------------------------------------------------------------                       
             # t1=time.time()
             # if self.model_based:
@@ -331,7 +366,7 @@ class OnPolicyRunner:
                     break
             self.logger.log(inner_iter = inner + 1, iter=iter)
 
-    def test(self,nnn):
+    def test(self):
         """
         The environment should return sth like [n_agent, dim] or [batch_size, n_agent, dim] in either numpy or torch.
         """
@@ -343,22 +378,11 @@ class OnPolicyRunner:
         episodes = []
         for i in trange(self.n_test):
             episode = []
-            env = self.env_test    
-            
-            if self.env_name == 'eight':
-                if i==0 and nnn == 0:
-                    env.reset()    #for figure eight env
-            else:                           
-                env.reset()     # for another env
-                
-            # env.reset()
-            
+            env = self.env_test
+            env.reset()
             d, ep_ret, ep_len = np.array([False]), 0, 0
             while not(d.any() or (ep_len == length)):
                 s = env.get_state_() # dim = 2 or 3 (vectorized)
-                # s.insert(0, s[0])
-                # s=dp(s)
-                # print('ssss=',s)
                 s = torch.as_tensor(s, dtype=torch.float, device=self.device)
                 a = self.agent.act(s).sample() # a is a tensor
                 # print('a=,',a)
@@ -407,11 +431,9 @@ class OnPolicyRunner:
         env = self.env_learn
         trajs = []
         traj = TrajectoryBuffer(device=self.device)
+        
         start = time.time()
         for t in range(length):
-        # d, ep_len = np.array([False]), 0
-        # while not(d.any() or (ep_len == length)):
-            # ep_len+=1
             s = env.get_state_()
             s = torch.as_tensor(s, dtype=torch.float, device=self.device)
             dist = self.agent.act(s)
@@ -435,63 +457,23 @@ class OnPolicyRunner:
             if self.episode_len == self.max_episode_len:
                 d = np.zeros(d.shape, dtype=np.float32)
             d = np.array(d)
-#-----------------------------------------------------------------------------------------  
-
-#----------------------------------------------------------------------------------------- 
-            if self.env_name == 'eight':
             
-                # if d.any() or (self.episode_len == self.max_episode_len):     
-                if self.episode_len == self.max_episode_len:                 
-                    
-                    self.logger.log(episode_reward=self.episode_reward.sum(), episode_len = self.episode_len, episode=None)
-                    try:
-                        self.episode_reward, self.episode_len = 0, 0#TODO:catch up the error
-                    except Exception as e:
-                        print('reset error!:', e)
-                        self.episode_reward, self.episode_len =  0, 0  # TODO:catch up the error
-                        if self.model_based == False:
-                            trajs += traj.retrieve()
-                            traj = TrajectoryBuffer(device=self.device)
-                if self.episode_len == self.max_episode_len:
-                    if self.model_based:
-                        trajs += traj.retrieve()
-                        traj = TrajectoryBuffer(device=self.device)
-#----------------------------------------------------------------------------------------- 
-
-#--------------------------------------------------------------------------------------    
-
-            else:
-            # for other_env
-                if d.any() or (self.episode_len == self.max_episode_len):      
-                # if self.episode_len == self.max_episode_len:                 
-                    
-                    self.logger.log(episode_reward=self.episode_reward.sum(), episode_len = self.episode_len, episode=None)
-                    try:
-                        _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0#TODO:catch up the error
-                    except Exception as e:
-                        print('reset error!:', e)
-                        _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0  # TODO:catch up the error
-                        if self.model_based == False:
-                            trajs += traj.retrieve()
-                            traj = TrajectoryBuffer(device=self.device)
-                            
-                if self.episode_len == self.max_episode_len:
-                    if self.model_based:
-                        trajs += traj.retrieve()
-                        traj = TrajectoryBuffer(device=self.device)
-#--------------------------------------------------------------------------------------    
-
-
+            # if d.any() or (self.episode_len == self.max_episode_len):    
+            if self.episode_len == self.max_episode_len:
                 
-
-
-        # print('len=',ep_len)
+                self.logger.log(episode_reward=self.episode_reward.sum(), episode_len = self.episode_len, episode=None)
+                try:
+                    _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0#TODO:catch up the error
+                except Exception as e:
+                    print('reset error!:', e)
+                    _, self.episode_reward, self.episode_len = self.env_learn.reset(), 0, 0  # TODO:catch up the error
+                trajs += traj.retrieve()
+                traj = TrajectoryBuffer(device=self.device)
         end = time.time()
         print('time in 1 episode is ',end-start)
         trajs += traj.retrieve(length=self.max_episode_len)
         self.logger.log(env_rollout_time=time.time()-time_t)
         return trajs
-    
     
     def rollout_model(self, trajs, length=0):
         time_t = time.time()
@@ -499,10 +481,6 @@ class OnPolicyRunner:
         if length <= 0:
             length = self.model_traj_length
         s = [traj['s'] for traj in trajs]
-
-                 
-        # s = torch.as_tensor(s, dtype=torch.float32, device=self.device)
-
         s = torch.stack(s, dim=0)
         b, T, n, depth = s.shape
         s = s.view(-1, n, depth)
@@ -524,95 +502,35 @@ class OnPolicyRunner:
         return trajs
     
 #-------------------------------------------------------------------------------------------------
-   
-    # def updateModel(self, n=0):
-    #     if n <= 0:
-    #         n = self.n_model_update
-        
-        
-    #     def mp_update(i_model_update):
-    #        trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #        trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
-    #        self.agent.updateModel(trajs, length=self.model_update_length)
-    #        if i_model_update % self.model_validate_interval == 0:
-    #            validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #            validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
-    #            rel_error = self.agent.validateModel(validate_trajs, length=self.model_update_length)
-    #            # if rel_error < self.model_error_thres:
-    #            #     break
-    #        return               
-            
-    #     pool=mp.Pool()
-    #     # res = pool.map_async(mp_update, range(n))
-        
-    #     for i in trange(n):
-    #         pool.apply_async(mp_update, args = (i,))
-
-            
-    #     pool.close()
-    #     pool.join()
-
-    #     self.logger.log(model_update = n + 1)
-    
-
-
 #-------------------------------------------------------------------------------------------------
+
 
     def updateModel(self, n=0):
         if n <= 0:
             n = self.n_model_update
-        for i_model_update in trange(n):
-            trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-            trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
-            
-            self.agent.updateModel(trajs, length=self.model_update_length)
+        data = Dataset(self.model_buffer, n, self.model_batch_size, self.model_update_length)
 
-            if i_model_update % self.model_validate_interval == 0:
-                validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-                validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
-                rel_error = self.agent.validateModel(validate_trajs, length=self.model_update_length)
-                if rel_error < self.model_error_thres:
-                    break
-        self.logger.log(model_update = i_model_update + 1)
+        self.agent.updateModel(length=self.model_update_length)
 
+        # if i_model_update % self.model_validate_interval == 0:
+        #     validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
+        #     validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
+        #     rel_error = self.agent.validateModel(validate_trajs, length=self.model_update_length)
+        #     if rel_error < self.model_error_thres:
+        #         break
+        # self.logger.log(model_update = i_model_update + 1)
+        self.logger.log(model_update = n + 1)
 
 #----------------------------------------------------------------------------------------------
-
-
-    # def updateModel(self, n=0):
-    #     if n <= 0:
-    #         n = self.n_model_update
-    #     for i_model_update in trange(n):
-    #         if i_model_update % (self.rollout_length//self.model_update_length) == 0:
-    #             trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #         trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
-            
-    #         self.agent.updateModel(trajs, length=self.model_update_length)
-            
-    #         if i_model_update % self.model_validate_interval == 0:
-    #             validate_trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
-    #             validate_trajs = [traj.getFraction(length=self.model_update_length) for traj in validate_trajs]
-    #             rel_error = self.agent.validateModel(validate_trajs, length=self.model_update_length)
-    #             if rel_error < self.model_error_thres:
-    #                 break
-    #     self.logger.log(model_update = i_model_update + 1)
-
-
-
-
-
-
-
-
-
-
-
-
     
     def testModel(self, n = 0):
         trajs = self.model_buffer.sampleTrajs(self.model_batch_size)
         trajs = [traj.getFraction(length=self.model_update_length) for traj in trajs]
         return self.agent.validateModel(trajs, length=self.model_update_length)
+    
+    
+
+    
 
 class IA2C(nn.ModuleList):
     def __init__(self, logger, device, agent_args, **kwargs):
@@ -1087,7 +1005,6 @@ class IC3Net(nn.ModuleList):
 
     def inference_hidden_state(self, s):
         # encode the state
-        s=s.to(self.device)
         s_encoding = self.activation_function(self.obs_encoder(s))
 
         # decide which agent to communication
@@ -1572,18 +1489,14 @@ class ModelBasedAgent(nn.ModuleList):
         self.device = device
         self.lr_p = agent_args.lr_p
         self.p_args = agent_args.p_args
+        # from train_ddp import GraphConvolutionalModel
+        # self.ps = GraphConvolutionalModel(self.adj, self.observation_dim, self.action_dim, self.n_agent).to(self.device)
+
         self.ps = GraphConvolutionalModel(self.logger, self.adj, self.observation_dim, self.action_dim, self.n_agent, self.p_args).to(self.device)
-        
-        # self.ps = self.ps.cuda()
-        # torch.backends.cudnn.benchmark = True
-        # self.ps = torch.nn.DataParallel(self.ps, device_ids=range(torch.cuda.device_count()))
-        # # self.ps = nn.DataParallel(self.ps)
-        
-        
-        self.optimizer_p = Adam(self.ps.parameters(), lr=self.lr)
+        # self.optimizer_p = Adam(self.ps.parameters(), lr=self.lr)
 
 
-    def updateModel(self, trajs, length=1):
+    def updateModel(self, length=1):
         """
         Input dim: 
         s: [[T, n_agent, state_dim]]
@@ -1591,35 +1504,46 @@ class ModelBasedAgent(nn.ModuleList):
         """
         time_t = time.time()
         loss_total = 0.
-        ss, actions, rs, s1s, ds = [], [], [], [], []
-        
-        
-        
-        for traj in trajs:
-            s, a, r, s1, d = traj["s"], traj["a"], traj["r"], traj["s1"], traj["d"]
-            s, a, r, s1, d = [torch.as_tensor(item, device=self.device) for item in [s, a, r, s1, d]]          
-            ss.append(s)
-            actions.append(a)
-            rs.append(r)
-            s1s.append(s1)
-            ds.append(d)  
-            
+                
+        #需要传入的数据 data,length, self.logger, self.adj, self.observation_dim, self.action_dim, self.n_agent, self.p_args, data
 
-        ss, actions, rs, s1s, ds = [torch.stack(item, dim=0) for item in [ss, actions, rs, s1s, ds]]
-        # loss, rel_state_error = self.ps.train(ss, actions, rs, s1s, ds, length) # [n_traj, T, n_agent, dim]
-        loss, rel_state_error = self.ps.train(ss, actions, rs, s1s, ds, length) # [n_traj, T, n_agent, dim]
+
+
+        import subprocess
+        completed = subprocess.run(['/home/mcd1619/MB-MARL/algorithms/mbdppo/train.sh'])   
+        print('returncode:', completed.returncode)
+        
+
      
-        self.optimizer_p.zero_grad()
-        loss.sum().backward()
-        # torch.nn.utils.clip_grad_norm_(parameters=self.ps.parameters(), max_norm=5, norm_type=2)
-        self.optimizer_p.step()
-#——————————————————————————————————————————————————————————————————————————————————        
-        self.logger.log(p_loss_total=loss.sum(), p_update=None)
-        self.logger.log(model_update_time=time.time()-time_t)
-#——————————————————————————————————————————————————————————————————————————————————   
-        return rel_state_error.item()
+        if completed.returncode == 0:
+            subprocess.run(['/home/mcd1619/MB-MARL/algorithms/mbdppo/kill.sh'])
+           
+            self.ps = self.load_model_gpus(self.ps ,'/home/mcd1619/MB-MARL/algorithms/mbdppo/checkpoints/model_ddp.pth',self.device)
+           
+        else:
+            print("ddp run error")
+
+        # self.logger.log(p_loss_total=loss.sum(), p_update=None)
+        # self.logger.log(model_update_time=time.time()-time_t)
+        # return rel_state_error.item()
     
-    
+    def load_model_gpus(self, model, model_path, map_location):
+        """
+        加载多GPU model
+        """
+        state_dict = torch.load(model_path, map_location)
+        # create new OrderedDict that does not contain `module.`
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            if k[:7]=='module.':
+                name = k[7:]  # remove `module.`
+            else:
+                name = k
+            new_state_dict[name] = v
+        # load params
+        model.load_state_dict(new_state_dict,False)
+        return model    
 
 
 
@@ -1667,50 +1591,7 @@ class ModelBasedAgent(nn.ModuleList):
 
 
 
-class HiddenAgent(ModelBasedAgent):
-    def __init__(self, logger, device, agent_args, **kwargs):
-        super().__init__(logger, device, agent_args, **kwargs)
-        self.hidden_state_dim = agent_args.hidden_state_dim
-        self.embedding_sizes = agent_args.embedding_sizes
-        self.embedding_layers = self._init_embedding_layers()
-        self.optimizer_p.add_param_group({'params': self.embedding_layers.parameters()})
     
-    def act(self, s, requires_log=False):
-        s = s.detach()
-        if s.size()[-1] != self.hidden_state_dim:
-            s = self._state_embedding(s).detach()
-        return super().act(s, requires_log)
-    
-    def get_logp(self, s, a):
-        s = s.detach()
-        if s.size()[-1] != self.hidden_state_dim:
-            s = self._state_embedding(s).detach()
-        return super().get_logp(s, a)
-    
-    def updateModel(self, s, a, r, s1, d):
-        if s.size()[-1] != self.hidden_state_dim:
-            s = self._state_embedding(s)
-        if s1.size()[-1] != self.hidden_state_dim:
-            s1 = self._state_embedding(s1)
-        return super().updateModel(s, a, r, s1, d)
-    
-    def model_step(self, s, a):
-        if s.size()[-1] != self.hidden_state_dim:
-            s = self._state_embedding(s)
-        return super().model_step(s, a)
-
-    def _init_embedding_layers(self):
-        embedding_layers = nn.ModuleList()
-        for _ in range(self.n_agent):
-            embedding_layers.append(MLP(self.embedding_sizes, activation=nn.ReLU))
-        return embedding_layers.to(self.device)
-    
-    def _state_embedding(self, s):
-        embeddings = []
-        for i in range(self.n_agent):
-            embeddings.append(self.embedding_layers[i](s.select(dim=-2, index=i).to(self.device)))
-        embeddings = torch.stack(embeddings, dim=-2)
-        return embeddings
 
 class MB_DPPOAgent(ModelBasedAgent, DPPOAgent):
     def __init__(self, logger, device, agent_args, **kwargs):
@@ -1728,83 +1609,69 @@ class MB_DPPOAgent(ModelBasedAgent, DPPOAgent):
             kl_exceeded = any(kls)
         return kl_exceeded or r_converged and entropy_converged
 
-class MB_DPPOAgent_Hidden(HiddenAgent, MB_DPPOAgent):
-    def __init__(self, logger, device, agent_args, **kwargs):
-        super().__init__(logger, device, agent_args, **kwargs)
+
+# class HiddenAgent(ModelBasedAgent):
+#     def __init__(self, logger, device, agent_args, **kwargs):
+#         super().__init__(logger, device, agent_args, **kwargs)
+#         self.hidden_state_dim = agent_args.hidden_state_dim
+#         self.embedding_sizes = agent_args.embedding_sizes
+#         self.embedding_layers = self._init_embedding_layers()
+#         self.optimizer_p.add_param_group({'params': self.embedding_layers.parameters()})
     
-    def checkConverged(self, ls_info):
-        rs = [info[0] for info in ls_info]
-        r_converged = len(rs) > 8 and np.mean(rs[-3:]) < np.mean(rs[:-5])
-        entropies = [info[1] for info in ls_info]
-        entropy_converged = len(entropies) > 8 and np.abs(np.mean(entropies[-3:]) / np.mean(entropies[:-5]) - 1) < 1e-2
-        kls = [info[2] for info in ls_info]
-        kl_exceeded = False
-        if self.target_kl is not None:
-            kls = [kl > 1.5 * self.target_kl for kl in kls]
-            kl_exceeded = any(kls)
-        return kl_exceeded or r_converged and entropy_converged
+#     def act(self, s, requires_log=False):
+#         s = s.detach()
+#         if s.size()[-1] != self.hidden_state_dim:
+#             s = self._state_embedding(s).detach()
+#         return super().act(s, requires_log)
+    
+#     def get_logp(self, s, a):
+#         s = s.detach()
+#         if s.size()[-1] != self.hidden_state_dim:
+#             s = self._state_embedding(s).detach()
+#         return super().get_logp(s, a)
+    
+#     def updateModel(self, s, a, r, s1, d):
+#         if s.size()[-1] != self.hidden_state_dim:
+#             s = self._state_embedding(s)
+#         if s1.size()[-1] != self.hidden_state_dim:
+#             s1 = self._state_embedding(s1)
+#         return super().updateModel(s, a, r, s1, d)
+    
+#     def model_step(self, s, a):
+#         if s.size()[-1] != self.hidden_state_dim:
+#             s = self._state_embedding(s)
+#         return super().model_step(s, a)
 
-"""
-class DA2CAgent(DPPOAgent):
-    def __init__(self, logger, device, agent_args, **kwargs):
-        super().__init__(logger, device, agent_args, **kwargs)
-        self.use_rtg = False
+#     def _init_embedding_layers(self):
+#         embedding_layers = nn.ModuleList()
+#         for _ in range(self.n_agent):
+#             embedding_layers.append(MLP(self.embedding_sizes, activation=nn.ReLU))
+#         return embedding_layers.to(self.device)
+    
+#     def _state_embedding(self, s):
+#         embeddings = []
+#         for i in range(self.n_agent):
+#             embeddings.append(self.embedding_layers[i](s.select(dim=-2, index=i).to(self.device)))
+#         embeddings = torch.stack(embeddings, dim=-2)
+#         return embeddings
 
-    def updateAgent(self, traj, clip=None):
-        time_t = time.time()
-        if clip is None:
-            clip = self.clip
-        n_minibatch = self.n_minibatch
-        s, a, r, s1, d, logp = traj['s'], traj['a'], traj['r'], traj['s1'], traj['d'], traj['logp']
-        s, a, r, s1, d, logp = [item.to(self.device) for item in [s, a, r, s1, d, logp]]
-        value_old, returns, advantages, reduced_advantages = self._process_traj(traj)
 
-        advantages_old = reduced_advantages if self.use_reduced_v else advantages
 
-        b, T, n, d_s = s.size()
-        d_a = a.size()[-1]
-        s = s.view(-1, n, d_s)
-        a = a.view(-1, n, d_a)
-        logp = logp.view(-1, n, 1)
-        advantages_old = advantages_old.view(-1, n, 1)
-        returns = returns.view(-1, n, 1)
-        value_old = value_old.view(-1, n, 1)
 
-        batch_total = logp.size()[0]
-        batch_size = int(batch_total/n_minibatch)
-        kl = 0
-        i_pi = 0
-        for i_pi in range(self.n_update_pi):
-            batch_state, batch_action, batch_logp, batch_advantages_old = [s, a, logp, advantages_old]
-            if n_minibatch > 1:
-                idxs = np.random.choice(range(batch_total), size=batch_size, replace=False)
-                [batch_state, batch_action, batch_logp, batch_advantages_old] = [item[idxs] for item in [batch_state, batch_action, batch_logp, batch_advantages_old]]
-            batch_logp_new = self.get_logp(batch_state, batch_action)
-            logp_diff = batch_logp_new - batch_logp
-            kl = logp_diff.mean()
-            loss_surr = batch_logp_new * batch_advantages_old
-            loss_entropy = - torch.mean(torch.exp(batch_logp_new) * batch_logp_new)
-            loss_pi = - loss_surr - self.entropy_coeff * loss_entropy
-            self.optimizer_pi.zero_grad()
-            loss_pi.backward()
-            self.optimizer_pi.step()
-            self.logger.log(surr_loss = loss_surr, entropy = loss_entropy, kl_divergence = kl, pi_update=None)
-            if self.target_kl is not None and kl.abs() > 1.5 * self.target_kl:
-                break
-        self.logger.log(pi_update_step=i_pi)
 
-        for _ in range(self.n_update_v):
-            batch_returns = returns
-            batch_state = s
-            if n_minibatch > 1:
-                idxs = np.random.randint(0, len(batch_total), size=batch_size)
-                [batch_returns, batch_state] = [item[idxs] for item in [batch_returns, batch_state]]
-            batch_v_new = self._evalV(batch_state)
-            loss_v = ((batch_v_new - batch_returns) ** 2).mean()
-            self.optimizer_v.zero_grad()
-            loss_v.backward()
-            self.optimizer_v.step()
-            self.logger.log(v_loss=loss_v, v_update=None)
-        self.logger.log(update=None, reward=r, value=value_old, clip=clip, returns=returns, advantages=advantages_old.abs())
-        self.logger.log(agent_update_time=time.time()-time_t)
-"""
+# class MB_DPPOAgent_Hidden(HiddenAgent, MB_DPPOAgent):
+#     def __init__(self, logger, device, agent_args, **kwargs):
+#         super().__init__(logger, device, agent_args, **kwargs)
+    
+#     def checkConverged(self, ls_info):
+#         rs = [info[0] for info in ls_info]
+#         r_converged = len(rs) > 8 and np.mean(rs[-3:]) < np.mean(rs[:-5])
+#         entropies = [info[1] for info in ls_info]
+#         entropy_converged = len(entropies) > 8 and np.abs(np.mean(entropies[-3:]) / np.mean(entropies[:-5]) - 1) < 1e-2
+#         kls = [info[2] for info in ls_info]
+#         kl_exceeded = False
+#         if self.target_kl is not None:
+#             kls = [kl > 1.5 * self.target_kl for kl in kls]
+#             kl_exceeded = any(kls)
+#         return kl_exceeded or r_converged and entropy_converged
+

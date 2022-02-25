@@ -105,6 +105,7 @@ class TrafficSimulator:
         self._init_sim(self.seed)
         self._init_nodes()
         self.terminate()
+        
 
     def collect_tripinfo(self):
         # read trip xml, has to be called externally to get complete file
