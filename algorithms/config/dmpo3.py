@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Feb  6 16:37:26 2022
+
+@author: 86153
+"""
+
+
 from gym.spaces import Box
 from numpy import pi
 import torch.nn
@@ -8,17 +16,25 @@ from algorithms.mbdppo.MB_DPPO import MB_DPPOAgent
 def getArgs(radius_p, radius_v, radius_pi, env):
 
     alg_args = Config()
-    alg_args.n_iter = 25000
+    alg_args.n_iter = 50000
     alg_args.n_inner_iter = 10
+    
     alg_args.n_warmup = 50
-    alg_args.n_model_update = int(500)
-    alg_args.n_model_update_warmup = int(2e4)
+    # alg_args.n_warmup = 10
+    
+    alg_args.n_model_update = int(2e3)
+    # alg_args.n_model_update = 10
+    
+    # alg_args.n_model_update_warmup = int(2e4)
+    alg_args.n_model_update_warmup = int(2e3)
+    # alg_args.n_model_update_warmup = 10
+    
     alg_args.n_test = 5
     alg_args.model_validate_interval = 10
-    alg_args.test_interval = 20
-    alg_args.rollout_length = 1500
-    alg_args.test_length = 1500
-    alg_args.max_episode_len = 1500
+    alg_args.test_interval = 50
+    alg_args.rollout_length = 200
+    alg_args.test_length = 200
+    alg_args.max_episode_len = 200
     alg_args.model_based = True
     alg_args.load_pretrained_model = False
     alg_args.pretrained_model = 'checkpoints/standard_makeFigureEight2_MB_DPPOAgent_17361/81501_5222.7847817614875.pt'
@@ -29,6 +45,7 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.model_batch_size = 256
     alg_args.model_buffer_size = 15
     alg_args.model_update_length = 4
+    # alg_args.model_update_length = 50
     alg_args.model_length_schedule = None
 
     agent_args = Config()
@@ -54,7 +71,7 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     agent_args.observation_space = env.observation_space
     agent_args.hidden_state_dim = 8
     agent_args.embedding_sizes = [env.observation_space.shape[0], 16, agent_args.hidden_state_dim]
-    agent_args.observation_dim = 2
+    agent_args.observation_dim = agent_args.observation_space.shape[0]
     agent_args.action_space = env.action_space
     agent_args.adj = env.neighbor_mask
     agent_args.radius_v = radius_v
@@ -76,12 +93,14 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     v_args = Config()
     v_args.network = MLP
     v_args.activation = torch.nn.ReLU
+    # v_args.activation = torch.nn.LeakyReLU
     v_args.sizes = [-1, 64, 64, 1]
     agent_args.v_args = v_args
 
     pi_args = Config()
     pi_args.network = MLP
     pi_args.activation = torch.nn.ReLU
+    # pi_args.activation = torch.nn.LeakyReLU
     pi_args.sizes = [-1, 64, 64, 16]
     pi_args.squash = False
     agent_args.pi_args = pi_args

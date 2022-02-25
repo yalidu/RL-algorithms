@@ -94,6 +94,10 @@ class FigureEightWrapper(AccelEnv):
     
     def rescaleReward(self, ep_return, ep_len):
         return ep_return
+    
+    # def reset(self):
+    #     return super().reset()
+        
 
 def makeFigureEight2(evaluate=False, version=0, render=None):
     HORIZON = 1500

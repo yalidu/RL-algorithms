@@ -10,7 +10,7 @@ regional reinforcement learning." American Control Conference (ACC), 2016. IEEE,
 """
 import numpy as np
 import os
-
+import algorithms
 MAX_CAR_NUM = 30
 SPEED_LIMIT_ST = 20
 SPEED_LIMIT_AV = 11

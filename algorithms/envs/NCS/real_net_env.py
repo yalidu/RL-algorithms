@@ -216,6 +216,43 @@ class RealNetEnv(TrafficSimulator):
             plot_cdf(data)
             plt.ylabel(name)
             fig.savefig(self.output_path + self.name + '_' + name + '.png')
+            
+
+    def reset(self):
+        
+
+        
+        state = super().reset()
+        # print('1111=',state)
+
+        # state = self.env.reset()
+
+        # state = np.array(state, dtype=np.float32)
+        self.state = state
+        # print(state)
+        return state
+    
+    def step(self, action):
+        # super().step(action)
+        if isinstance(action, np.ndarray):
+            action = action.tolist()
+        # for action dim problem list 1 * action_dim
+        if type(action[0]) == list:
+            action = action[0]
+        state, reward, done, info = super().step(action)
+        # if self.test:
+        #     reward = self._comparable_reward()
+        state = np.array(state, dtype=np.float32)
+        reward = np.array(reward, dtype=np.float32)
+        done = np.array([done]*28, dtype=np.float32)
+        self.state=state
+        return state, reward, done, None
+
+    
+    def get_state_(self):
+        return self.state
+            
+
 
 
 def plot_cdf(X, c='b', label=None):

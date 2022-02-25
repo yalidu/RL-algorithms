@@ -70,14 +70,14 @@ class CACCWrapper(gym.Wrapper):
         reward, done =  self.env.state2Reward(state)
         return (reward+self.bias)/self.std, done
     
-    def rescaleReward(self, acc_reward, episode_len):
-        """
-        acc_reward is sum over trajectory, mean over agent
-        """
-        acc_reward = acc_reward*self.std
-        acc_reward -= episode_len*self.bias
-        reward = acc_reward*8/episode_len
-        return reward
+    # def rescaleReward(self, acc_reward, episode_len):
+    #     """
+    #     acc_reward is sum over trajectory, mean over agent
+    #     """
+    #     acc_reward = acc_reward*self.std
+    #     acc_reward -= episode_len*self.bias
+    #     reward = acc_reward*8/episode_len
+    #     return reward
         
     def step(self, action):
         if isinstance(action, np.ndarray):
@@ -103,13 +103,13 @@ class CACCWrapper(gym.Wrapper):
 
 
 def CACC_catchup():
-    return CACCWrapper('NCS/config/config_ma2c_nc_catchup.ini', bias=200, std=2000)
+    return CACCWrapper('NCS/config/config_ma2c_nc_catchup.ini', bias=0, std=100)
 
 def CACC_slowdown():
-    return CACCWrapper('NCS/config/config_ma2c_nc_slowdown.ini', bias=300, std=2000)
+    return CACCWrapper('NCS/config/config_ma2c_nc_slowdown.ini', bias=0, std=100)
 
 def CACC_catchup_test():
-    return CACCWrapper('NCS/config/config_ma2c_nc_catchup.ini', bias=200, std=2000, test=True)
+    return CACCWrapper('NCS/config/config_ma2c_nc_catchup.ini', bias=0, std=100, test=True)
 
 def CACC_slowdown_test():
-    return CACCWrapper('NCS/config/config_ma2c_nc_slowdown.ini', bias=300, std=2000, test=True)
+    return CACCWrapper('NCS/config/config_ma2c_nc_slowdown.ini', bias=0, std=100, test=True)

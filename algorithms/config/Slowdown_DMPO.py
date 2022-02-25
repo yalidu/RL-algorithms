@@ -11,7 +11,7 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.n_iter = 25000
     alg_args.n_inner_iter = 8
     alg_args.n_warmup = 50
-    alg_args.n_model_update = int(2e3)
+    alg_args.n_model_update = int(5e2)
     alg_args.n_model_update_warmup = int(2e4)
     alg_args.n_test = 5
     alg_args.model_validate_interval = 10
@@ -24,9 +24,9 @@ def getArgs(radius_p, radius_v, radius_pi, env):
     alg_args.pretrained_model = None
     alg_args.n_traj = 1024
     alg_args.model_traj_length = 25
-    alg_args.model_error_thres = 2e-4
+    alg_args.model_error_thres = 2e-5
     alg_args.model_prob = 0.5
-    alg_args.model_batch_size = 256
+    alg_args.model_batch_size = 512
     alg_args.model_buffer_size = 15
     alg_args.model_update_length = 4
     alg_args.model_length_schedule = None

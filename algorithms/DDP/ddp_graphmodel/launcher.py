@@ -18,9 +18,6 @@ from algorithms.envs.UAV import UAV_Env
 from algorithms.envs.Car import Car_Env
 from algorithms.envs.UAV_2 import UAV_2_Env
 from algorithms.envs.UAV_101 import UAV_101_Env
-
-from algorithms.envs.ATSC import Grid_Env
-from algorithms.envs.ATSC import Monaco_Env
 from algorithms.mbdppo.MB_DPPO import OnPolicyRunner
 os.environ['MKL_SERVICE_FORCE_INTEL']='1'
 # from UCAV import UAV_Env
@@ -43,7 +40,7 @@ def getRunArgs(input_args):
     run_args.n_thread = 1
     run_args.parallel = False
     
-    run_args.device = 'cuda:2'
+    run_args.device = 'cuda:3'
  
     run_args.n_cpu = 1/4
     run_args.n_gpu = 0
@@ -51,7 +48,7 @@ def getRunArgs(input_args):
     run_args.test = False
     run_args.profiling = False
     run_args.name = f'standard{input_args.name}'
-    run_args.radius_v = 4
+    run_args.radius_v = 3
     run_args.radius_pi = 1
     run_args.radius_p = 1
     run_args.init_checkpoint = None
@@ -64,12 +61,12 @@ def getRunArgs(input_args):
 def initArgs(run_args, env_train, env_test, input_arg):
     ref_env = env_train
 
-    if input_arg.env in ['eight', 'ring', 'catchup', 'slowdown', 'UAV_Nav', 'Car', 'UAV_2', 'UAV_101','Grid','Monaco'] or input_arg.algo in ['CPPO', 'DMPO', 'IC3Net', 'IA2C']:
+    if input_arg.env in ['eight', 'ring', 'catchup', 'slowdown', 'UAV_Nav', 'Car', 'UAV_2', 'UAV_101'] or input_arg.algo in ['CPPO', 'DMPO', 'IC3Net', 'IA2C']:
         env_str = input_arg.env[0].upper() + input_arg.env[1:]
         config = importlib.import_module(f"algorithms.config.{env_str}_{input_args.algo}")
 
     if input_arg.env in ['catchup', 'slowdown']:
-        run_args.radius_v = 4
+        run_args.radius_v = 2
         run_args.radius_pi = 1
         run_args.radius_p = 1
 
@@ -103,11 +100,6 @@ def initEnv(input_args):
         env_fn_train, env_fn_test = UAV_2_Env, UAV_2_Env  
     elif input_args.env == 'UAV_101':
         env_fn_train, env_fn_test = UAV_101_Env, UAV_101_Env  
-    elif input_args.env == 'Grid':
-        env_fn_train, env_fn_test = Grid_Env, Grid_Env  
-    elif input_args.env == 'Monaco':
-        env_fn_train, env_fn_test = Monaco_Env, Monaco_Env  
-
     else:
         env_fn_train, env_fn_test = None
     return env_fn_train, env_fn_test
@@ -162,7 +154,7 @@ def override(alg_args, run_args, env_fn_train, input_args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, required=False, default='Grid', help="environment(eight/ring/catchup/slowdown/UAV_Nav/Car/UAV_2/UAV_101/Grid/Monaco)")
+    parser.add_argument('--env', type=str, required=False, default='UAV_2', help="environment(eight/ring/catchup/slowdown/UAV_Nav/Car/UAV_2/UAV_101)")
     parser.add_argument('--algo', type=str, required=False, default='DMPO', help="algorithm(DMPO/IA2C/IC3Net/CPPO/DPPO) ")
     parser.add_argument('--name', type=str, required=False, default='', help="the additional name for logger")
     parser.add_argument('--para', type=str, required=False, default='{}', help="the hyperparameter json string" )
@@ -200,8 +192,7 @@ run_args = getRunArgs(input_args)
 alg_args = initArgs(run_args, env_train, env_test, input_args)
 alg_args, run_args = override(alg_args, run_args, env_fn_train, input_args)
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5'
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+#os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5'
 logger = LogServer({'run_args':run_args, 'algo_args':alg_args}, mute=run_args.debug or run_args.test or run_args.profiling)
 logger = LogClient(logger)
 agent = initAgent(logger, run_args.device, alg_args.agent_args)
@@ -213,8 +204,7 @@ print(f"n_gpus {torch.cuda.device_count()}")
 if run_args.profiling:
     import cProfile
     cProfile.run("OnPolicyRunner(logger = logger, run_args=run_args, alg_args=alg_args, agent=agent, env_learn=env_train, env_test = env_test).run()",
-                  filename=f'device{run_args.device}_parallel{run_args.parallel}.profile')
+                 filename=f'device{run_args.device}_parallel{run_args.parallel}.profile')
 else:
-    OnPolicyRunner(logger = logger, run_args=run_args, alg_args=alg_args, agent=agent, env_learn=env_train, env_test = env_test,env_args=input_args).run()
+    OnPolicyRunner(logger = logger, run_args=run_args, alg_args=alg_args, agent=agent, env_learn=env_train, env_test = env_test).run()
 
-# print(run_args)
